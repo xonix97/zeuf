@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -324,6 +325,152 @@ func TestNestedIndent(t *testing.T) {
 	if view := m.renderBlocks(100); !strings.Contains(view, "│") {
 		t.Errorf("nested row missing guide:\n%s", view)
 	}
+}
+
+func queuedModel() (Model, chan string) {
+	submit := make(chan string, 4)
+	m := NewFull(make(chan Event, 64), submit, nil)
+	m.width, m.height = 100, 40
+	return m, submit
+}
+
+func typeEnter(m Model, line string) Model {
+	for _, r := range line {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	return updated.(Model)
+}
+
+func countKind(m Model, kind string) int {
+	n := 0
+	for _, b := range m.blocks {
+		if b.kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+func TestBusyStagesNext(t *testing.T) {
+	m, submit := queuedModel()
+	m = typeEnter(m, "first")
+	if len(submit) != 1 || !m.busy {
+		t.Fatalf("idle submit must forward immediately (chan=%d busy=%v)", len(submit), m.busy)
+	}
+	m = typeEnter(m, "second")
+	if len(submit) != 1 {
+		t.Fatal("submit while busy must not forward")
+	}
+	if m.pendingNext != "second" || countKind(m, "queued") != 1 {
+		t.Errorf("expected one (next) staged, got %q", m.pendingNext)
+	}
+	// A newer message replaces the staged one — bursts never pile up.
+	m = typeEnter(m, "third")
+	if m.pendingNext != "third" || countKind(m, "queued") != 1 {
+		t.Errorf("staged slot must replace, got %q", m.pendingNext)
+	}
+	if len(submit) != 1 {
+		t.Fatal("replacement must not forward either")
+	}
+}
+
+func TestDoneFlushesNext(t *testing.T) {
+	m, submit := queuedModel()
+	m = typeEnter(m, "first")
+	<-submit // core takes it
+	m = typeEnter(m, "second")
+	m.handleEvent(Event{Kind: "done"})
+	if m.pendingNext != "" {
+		t.Error("slot must clear on flush")
+	}
+	select {
+	case line := <-submit:
+		if line != "second" {
+			t.Errorf("flushed %q, want second", line)
+		}
+	default:
+		t.Fatal("done must flush the staged message")
+	}
+	if !m.busy || countKind(m, "queued") != 0 || countKind(m, "user") != 2 {
+		t.Errorf("flushed row must promote to user turn (busy=%v)", m.busy)
+	}
+}
+
+func TestErrorFlushesNext(t *testing.T) {
+	m, submit := queuedModel()
+	m = typeEnter(m, "first")
+	<-submit
+	m = typeEnter(m, "second")
+	m.handleEvent(Event{Kind: "error", Text: "boom"})
+	select {
+	case <-submit:
+	default:
+		t.Fatal("errors end turns too — staged message must flush")
+	}
+}
+
+func TestScrollStaysPutDuringStream(t *testing.T) {
+	m := testModel()
+	m.vp = viewport.New(98, 10)
+	for i := 0; i < 30; i++ {
+		m.blocks = append(m.blocks, block{kind: "user", text: fmt.Sprintf("> line %d", i)})
+	}
+	m.refreshViewport()
+	m.vp.GotoBottom()
+	m.vp.HalfViewUp()
+	m.vp.HalfViewUp()
+	if m.vp.AtBottom() {
+		t.Fatal("setup: expected scrolled-up state")
+	}
+	m.follow = false // as pgup/wheel-up would set
+	for i := 0; i < 5; i++ {
+		m.handleEvent(Event{Kind: "token", Text: "tok "})
+	}
+	if m.vp.AtBottom() {
+		t.Error("streaming snapped a scrolled-up viewport to the bottom")
+	}
+	if m.follow {
+		t.Error("follow must stay off while the user reads history")
+	}
+}
+
+func TestFollowResumesAtBottom(t *testing.T) {
+	m := testModel()
+	m.vp = viewport.New(98, 10)
+	for i := 0; i < 30; i++ {
+		m.blocks = append(m.blocks, block{kind: "user", text: fmt.Sprintf("> line %d", i)})
+	}
+	m.follow = false
+	m.refreshViewport()
+	m.vp.GotoBottom()
+	m.follow = true // as wheel-down-to-bottom sets
+	m.handleEvent(Event{Kind: "token", Text: "tok "})
+	if !m.vp.AtBottom() {
+		t.Error("follow mode must track new output")
+	}
+}
+
+func TestWheelScrollsViewport(t *testing.T) {
+	m := testModel()
+	m.vp = viewport.New(98, 10)
+	for i := 0; i < 30; i++ {
+		m.blocks = append(m.blocks, block{kind: "user", text: fmt.Sprintf("> line %d", i)})
+	}
+	m.refreshViewport()
+	m.vp.GotoBottom()
+	updated, _ := m.Update(tea.MouseMsg{Type: tea.MouseWheelUp})
+	m = updated.(Model)
+	if m.vp.AtBottom() {
+		t.Error("wheel-up must scroll away from the bottom")
+	}
+	if m.follow {
+		t.Error("wheel-up must release follow")
+	}
+	updated, _ = m.Update(tea.MouseMsg{Type: tea.MouseWheelDown})
+	m = updated.(Model)
+	_ = m
 }
 
 func TestAgentViewSmoke(t *testing.T) {

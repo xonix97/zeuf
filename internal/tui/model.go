@@ -109,11 +109,13 @@ type Model struct {
 	history     []string
 	histIdx     int
 	busy        bool
-	streamIdx   int // block receiving the stream (-1 = none)
+	streamIdx   int  // block receiving the stream (-1 = none)
+	follow      bool // viewport tracks new output (off while reading history)
 	turnStart   time.Time
 	turnElapsed string
 	exampleIdx  int
 	tipIdx      int
+	pendingNext string // staged follow-up while busy (single slot)
 	quitting    bool
 	events      chan Event
 	submit      chan<- string
@@ -153,6 +155,7 @@ func NewFull(events chan Event, submit chan<- string, actions chan<- Action) Mod
 		status:    Status{State: "Starting"},
 		histIdx:   -1,
 		streamIdx: -1,
+		follow:    true,
 	}
 }
 
@@ -200,6 +203,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case Event:
 		m.handleEvent(msg)
 		return m, waitEvent(m.events)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -279,6 +284,7 @@ func (m *Model) handleEvent(ev Event) {
 		m.busy = false
 		m.streamIdx = -1
 		m.blocks = append(m.blocks, block{kind: "error", text: ev.Text})
+		m.flushPending()
 	case "done":
 		m.busy = false
 		m.finishStream()
@@ -286,6 +292,7 @@ func (m *Model) handleEvent(ev Event) {
 			m.turnElapsed = fmtDur(time.Since(m.turnStart))
 			m.turnStart = time.Time{}
 		}
+		m.flushPending()
 	case "picker":
 		m.openPicker(ev.Models)
 	case "connect-open":
@@ -482,9 +489,10 @@ func (m *Model) trimBlocks() {
 }
 
 func (m *Model) refreshViewport() {
-	stick := m.vp.AtBottom()
 	m.vp.SetContent(m.renderBlocks(m.vp.Width))
-	if stick {
+	// SetContent preserves the offset; only re-pin when following, so
+	// streaming never yanks a viewport the user scrolled up to read.
+	if m.follow {
 		m.vp.GotoBottom()
 	}
 }
@@ -595,6 +603,10 @@ func (m *Model) renderBlock(bl block, width int) string {
 		for _, line := range wrapLines(bl.text, max(20, width-2)) {
 			b.WriteString(dimStyle.Render(line) + "\n")
 		}
+	case "queued":
+		for _, line := range wrapLines(bl.text, max(20, width-2)) {
+			b.WriteString(dimStyle.Render(line) + "\n")
+		}
 	case "thinking":
 		lines := wrapLines(bl.text, max(20, width-4))
 		for i, line := range lines {
@@ -693,6 +705,24 @@ func (m *Model) renderPlan(bl block) string {
 	return b.String()
 }
 
+// handleMouse routes wheel scrolling to the viewport (chat mode only) so
+// the wheel scrolls history instead of arriving as arrow keys. Reaching
+// the bottom re-engages follow.
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.mode != modeChat {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.MouseWheelUp:
+		m.vp.HalfViewUp()
+		m.follow = false
+	case tea.MouseWheelDown:
+		m.vp.HalfViewDown()
+		m.follow = m.vp.AtBottom()
+	}
+	return m, nil
+}
+
 // handleKey routes keys by mode.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
@@ -726,9 +756,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "pgup", "ctrl+u":
 		m.vp.HalfViewUp()
+		m.follow = false
 		return m, nil
 	case "pgdown", "ctrl+d":
 		m.vp.HalfViewDown()
+		m.follow = m.vp.AtBottom()
 		return m, nil
 	case "up", "down":
 		if m.tryHistory(key) {
@@ -745,15 +777,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.history = append(m.history, line)
-		m.blocks = append(m.blocks, block{kind: "user", text: "> " + line})
-		m.turnStart = time.Now()
-		m.turnElapsed = ""
-		m.streamIdx = -1
-		m.exampleIdx = (m.exampleIdx + 1) % len(inputExamples)
-		m.tipIdx = (m.tipIdx + 1) % len(footerTips)
-		m.input.Placeholder = "Ask Zeuf…  e.g. " + inputExamples[m.exampleIdx]
-		m.refreshViewport()
 		if line == "/quit" || line == "/exit" {
+			m.blocks = append(m.blocks, block{kind: "user", text: "> " + line})
+			m.refreshViewport()
 			m.quitting = true
 			if m.submit != nil {
 				select {
@@ -763,13 +789,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		}
-		if m.submit != nil {
-			m.busy = true
-			select {
-			case m.submit <- line:
-			default:
-			}
+		if m.busy {
+			// A turn is running: hold exactly one follow-up, shown as
+			// (next). A newer message replaces it — turns run strictly
+			// one at a time, so bursts can never pile up.
+			m.pendingNext = line
+			m.stageQueuedBlock(line)
+			m.refreshViewport()
+			return m, nil
 		}
+		m.sendLine(line)
+		m.refreshViewport()
 		return m, nil
 	case "esc":
 		if m.input.Value() != "" {
@@ -781,6 +811,74 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.input, cmd = m.input.Update(msg)
 	m.vp, _ = m.vp.Update(msg)
 	return m, cmd
+}
+
+// sendLine forwards one user turn to the core and marks the UI busy.
+func (m *Model) sendLine(line string) {
+	m.blocks = append(m.blocks, block{kind: "user", text: "> " + line})
+	m.turnStart = time.Now()
+	m.turnElapsed = ""
+	m.streamIdx = -1
+	m.follow = true
+	m.exampleIdx = (m.exampleIdx + 1) % len(inputExamples)
+	m.tipIdx = (m.tipIdx + 1) % len(footerTips)
+	m.input.Placeholder = "Ask Zeuf…  e.g. " + inputExamples[m.exampleIdx]
+	if m.submit != nil {
+		m.busy = true
+		select {
+		case m.submit <- line:
+		default:
+		}
+	}
+}
+
+// stageQueuedBlock shows (or refreshes) the single pending follow-up.
+func (m *Model) stageQueuedBlock(line string) {
+	text := "(next) " + line
+	for i := len(m.blocks) - 1; i >= 0; i-- {
+		if m.blocks[i].kind == "queued" {
+			m.blocks[i].text = text
+			return
+		}
+	}
+	m.blocks = append(m.blocks, block{kind: "queued", text: text})
+}
+
+// flushPending sends the staged follow-up as a real turn. It runs when a
+// turn ends; if the core can't take it yet, the slot is kept for the next
+// completion instead of dropping the message.
+func (m *Model) flushPending() {
+	if m.pendingNext == "" {
+		return
+	}
+	line := m.pendingNext
+	if m.submit == nil {
+		return
+	}
+	select {
+	case m.submit <- line:
+		m.pendingNext = ""
+		m.busy = true
+		m.turnStart = time.Now()
+		m.turnElapsed = ""
+		m.streamIdx = -1
+		m.follow = true
+		// Promote the queued row to a normal user row on send.
+		promoted := false
+		for i := len(m.blocks) - 1; i >= 0; i-- {
+			if m.blocks[i].kind == "queued" {
+				m.blocks[i].kind = "user"
+				m.blocks[i].text = "> " + line
+				promoted = true
+				break
+			}
+		}
+		if !promoted {
+			m.blocks = append(m.blocks, block{kind: "user", text: "> " + line})
+		}
+	default:
+		// Core still saturated: keep the slot for the next completion.
+	}
 }
 
 func (m *Model) tryHistory(key string) bool {
@@ -895,7 +993,7 @@ func (m Model) headerView() string {
 func (m Model) showWelcome() bool {
 	for _, bl := range m.blocks {
 		switch bl.kind {
-		case "user", "assistant", "thinking", "tool", "plan":
+		case "user", "assistant", "thinking", "tool", "plan", "queued":
 			return false
 		}
 	}
@@ -1034,12 +1132,13 @@ func (m Model) approvalView() string {
 }
 
 func (m Model) helpView() string {
-	return boxStyle.Render(`Keys: enter send · ctrl+j newline · ↑/↓ history · pgup/pgdn scroll · ctrl+p models · ? help · ctrl+c quit
+	return boxStyle.Render(`Keys: enter send · ctrl+j newline · ↑/↓ history · pgup/pgdn or mouse wheel scroll · ctrl+p models · ? help · ctrl+c quit
 
 Commands: /models [all] — pick the active model · /connect — attach a backend
   /router auto|balanced|fastest|quality|pin <id>|unpin|fallback|nofallback
   /providers · /session · /quit
 
+While a turn runs, further messages queue as (next) — one slot, newest wins.
 Tool steps show a spinner while running, then ✓/✗ with elapsed time.
 Sensitive actions pause for approval here — nothing runs silently.
 

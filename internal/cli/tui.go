@@ -46,7 +46,7 @@ func runTUI(ctx context.Context) error {
 	submit := make(chan string, 16)
 	actions := make(chan tui.Action, 16)
 	m := tui.NewFull(events, submit, actions)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

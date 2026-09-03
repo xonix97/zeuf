@@ -242,10 +242,22 @@ func TestPromptIncludesHistory(t *testing.T) {
 		{Role: core.RoleAssistant, Content: "did step 1"},
 		{Role: core.RoleTool, Name: "read", Content: "file data"},
 	}}
-	p := promptFor(req)
+	p := promptFor("/repo", req)
 	for _, want := range []string{"sys", "do the thing", "did step 1", "file data"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lost %q", want)
 		}
+	}
+	for _, want := range []string{
+		"ACT on the workspace",
+		"do not merely print code",
+		"working directory: /repo",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing action framing %q", want)
+		}
+	}
+	if strings.Contains(p, "no live tools") {
+		t.Error("prompt must not claim the backend has no tools")
 	}
 }

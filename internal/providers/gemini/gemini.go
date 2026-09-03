@@ -191,7 +191,7 @@ func classifyExit(code int, msg string) core.ErrorCode {
 func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
-	c := a.runCmd(ctx, req.Model, "json", promptFor(req))
+	c := a.runCmd(ctx, req.Model, "json", promptFor(a.workdir, req))
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &stdout
 	c.Stderr = &stderr
@@ -232,7 +232,7 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 // Stream implements providers.Adapter over `-o stream-json` JSONL.
 func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core.StreamEvent, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
-	c := a.runCmd(ctx, req.Model, "stream-json", promptFor(req))
+	c := a.runCmd(ctx, req.Model, "stream-json", promptFor(a.workdir, req))
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -581,7 +581,7 @@ func exitErr(model string, werr error, msg string) error {
 
 // promptFor renders a ChatRequest as the single transcript prompt the
 // gateway consumes (shared shape with the other CLI gateways).
-func promptFor(req core.ChatRequest) string {
+func promptFor(workdir string, req core.ChatRequest) string {
 	var b strings.Builder
 	for _, m := range req.Messages {
 		switch m.Role {
@@ -600,6 +600,7 @@ func promptFor(req core.ChatRequest) string {
 			b.WriteString("Tool result (" + m.Name + "):\n" + m.Content + "\n\n")
 		}
 	}
+	b.WriteString(providers.ActionDirective(workdir) + "\n\n")
 	b.WriteString("Reply to the latest user message above.")
 	return b.String()
 }

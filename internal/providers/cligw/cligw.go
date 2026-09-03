@@ -445,7 +445,7 @@ func ParseRunLine(line string, text *strings.Builder) *core.ProviderError {
 // promptFor renders a ChatRequest as the single transcript prompt the
 // gateway consumes. Full history is included so model switches continue
 // the same Zeuf session.
-func promptFor(req core.ChatRequest) string {
+func promptFor(workdir string, req core.ChatRequest) string {
 	var b strings.Builder
 	for _, m := range req.Messages {
 		switch m.Role {
@@ -464,9 +464,7 @@ func promptFor(req core.ChatRequest) string {
 			b.WriteString("Tool result (" + m.Name + "):\n" + m.Content + "\n\n")
 		}
 	}
-	if len(req.Tools) > 0 {
-		b.WriteString("You have no live tools in this turn; answer directly and completely.\n\n")
-	}
+	b.WriteString(providers.ActionDirective(workdir) + "\n\n")
 	b.WriteString("Reply to the latest user message above.")
 	return b.String()
 }
@@ -479,7 +477,7 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 	if strings.Contains(req.Model, "/") {
 		model = req.Model
 	}
-	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model, promptFor(req))
+	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model, promptFor(a.be.Workdir, req))
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		return nil, &core.ProviderError{Code: core.ErrUnknown, Provider: a.be.Provider, Message: err.Error()}
@@ -533,7 +531,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 	if strings.Contains(req.Model, "/") {
 		model = req.Model
 	}
-	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model, promptFor(req))
+	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model, promptFor(a.be.Workdir, req))
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		cancel()

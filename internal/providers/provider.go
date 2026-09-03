@@ -5,10 +5,28 @@ package providers
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"zeuf/internal/core"
 )
+
+// ActionDirective frames delegated turns so gateway agents act in the
+// workspace instead of dictating code. The agent still decides everything
+// from intent; this only states the standing job — never keyword rules,
+// never per-verb branches.
+func ActionDirective(workdir string) string {
+	var b strings.Builder
+	b.WriteString("You are Zeuf, acting in the user's terminal")
+	if wd := strings.TrimSpace(workdir); wd != "" {
+		b.WriteString(" (working directory: " + wd + ")")
+	}
+	b.WriteString(`. You have your full toolset available there.
+ACT on the workspace with your tools: inspect the repository, implement changes with file operations, run builds and tests, fix failures, and verify the result. Do the task yourself — do not merely print code for the user to apply.
+Ordinary development work proceeds directly; ask before anything destructive.
+When finished, summarize briefly: what changed (paths), and how it was verified.`)
+	return b.String()
+}
 
 // Health is a point-in-time liveness report. It never exposes credentials.
 type Health struct {
