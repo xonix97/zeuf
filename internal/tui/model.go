@@ -60,6 +60,8 @@ type Status struct {
 	Task     string // current user request, shown while busy
 	Ctx      string // "12.4k/200k" session tokens vs window
 	CtxPct   string // "6%"
+	MCPOk    int    // healthy MCP servers (-1 = unknown)
+	MCPBad   int    // failed MCP servers
 	Workdir  string
 	Branch   string
 	Dirty    string
@@ -121,6 +123,7 @@ type Model struct {
 	submit      chan<- string
 	actions     chan<- Action
 	pendingAppr *agent.ApprovalReq
+	apprIdx     int // selected approval option
 
 	picker  *pickerState
 	connect *connectState
@@ -152,7 +155,7 @@ func NewFull(events chan Event, submit chan<- string, actions chan<- Action) Mod
 		actions:   actions,
 		input:     ta,
 		spin:      sp,
-		status:    Status{State: "Starting"},
+		status:    Status{State: "Starting", MCPOk: -1},
 		histIdx:   -1,
 		streamIdx: -1,
 		follow:    true,
@@ -278,6 +281,11 @@ func (m *Model) handleEvent(ev Event) {
 		m.upsertPlan(ev.Detail)
 	case "usage":
 		m.status.Ctx, m.status.CtxPct = ev.Text, ev.Detail
+	case "mcp":
+		var okN, badN int
+		fmt.Sscanf(ev.Text, "%d", &okN)
+		fmt.Sscanf(ev.Detail, "%d", &badN)
+		m.status.MCPOk, m.status.MCPBad = okN, badN
 	case "task":
 		m.status.Task = ev.Text
 	case "error":
@@ -300,6 +308,7 @@ func (m *Model) handleEvent(ev Event) {
 	case "approval":
 		if ev.Approval != nil {
 			m.pendingAppr = ev.Approval
+			m.apprIdx = 0
 			m.prevMode = m.mode
 			m.mode = modeApproval
 		}
@@ -645,9 +654,10 @@ func (m *Model) renderTool(bl block, width int) string {
 	lines := wrapLines(plain, w-2)
 	for i, ln := range lines {
 		if i == 0 {
-			mark := okStyle.Render("✓")
+			// opencode-style step marker, colored by outcome.
+			mark := okStyle.Render("↳")
 			if !bl.toolOk {
-				mark = errStyle.Render("✗")
+				mark = errStyle.Render("↳")
 			}
 			b.WriteString(mark + " " + ln + "\n")
 		} else {
@@ -902,21 +912,36 @@ func (m *Model) tryHistory(key string) bool {
 
 func (m Model) handleApprovalKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
-	case "y", "Y":
-		m.answerApproval(true)
-	case "n", "N", "esc":
-		m.answerApproval(false)
+	case "left", "h":
+		m.apprIdx = (m.apprIdx + len(approvalOptions) - 1) % len(approvalOptions)
+	case "right", "l":
+		m.apprIdx = (m.apprIdx + 1) % len(approvalOptions)
+	case "y":
+		m.answerApproval("once")
+	case "a":
+		m.answerApproval("always")
+	case "n", "esc":
+		m.answerApproval("reject")
+	case "enter":
+		m.answerApproval(approvalOptions[m.apprIdx%len(approvalOptions)])
 	}
 	return m, nil
 }
 
-func (m *Model) answerApproval(ok bool) {
+func (m *Model) answerApproval(sel string) {
 	if m.pendingAppr != nil {
+		ok := sel == "once" || sel == "always"
 		select {
 		case m.pendingAppr.Resp <- ok:
 		default:
 		}
-		m.blocks = append(m.blocks, block{kind: "system", text: approvalVerdict(ok, m.pendingAppr.Action)})
+		if sel == "always" && m.actions != nil {
+			select {
+			case m.actions <- ActionAllowAlways{Tool: m.pendingAppr.Action}:
+			default:
+			}
+		}
+		m.blocks = append(m.blocks, block{kind: "system", text: approvalVerdict(sel, m.pendingAppr.Action)})
 		m.pendingAppr = nil
 	}
 	m.mode = m.prevMode
@@ -926,11 +951,15 @@ func (m *Model) answerApproval(ok bool) {
 	m.refreshViewport()
 }
 
-func approvalVerdict(ok bool, action string) string {
-	if ok {
+func approvalVerdict(sel, action string) string {
+	switch sel {
+	case "always":
+		return "Always allowed this session: " + action
+	case "once":
 		return "Approved: " + action
+	default:
+		return "Denied: " + action + " (told the agent to work around it)"
 	}
-	return "Denied: " + action + " (told the agent to work around it)"
 }
 
 // View implements tea.Model.
@@ -1060,6 +1089,14 @@ func (m Model) statusView() string {
 			ctx += " (" + m.status.CtxPct + ")"
 		}
 	}
+	mcpseg := ""
+	if m.status.MCPOk >= 0 && (m.status.MCPOk > 0 || m.status.MCPBad > 0) {
+		dot := okStyle.Render("⊙")
+		if m.status.MCPBad > 0 && m.status.MCPOk == 0 {
+			dot = errStyle.Render("⊙")
+		}
+		mcpseg = fmt.Sprintf(" · %s %d MCP", dot, m.status.MCPOk)
+	}
 	elapsed := ""
 	if m.turnElapsed != "" && !m.busy {
 		elapsed = " · " + m.turnElapsed
@@ -1071,7 +1108,7 @@ func (m Model) statusView() string {
 	left := dimStyle.Render("  ctrl+p models · ? help · ctrl+c quit")
 	mid := accentStyle.Render("● " + footerTips[m.tipIdx%len(footerTips)])
 	right := dimStyle.Render(shortPath(m.status.Workdir) + "  v" + Version)
-	return joinStatus(m.width, left, mid, right, fmt.Sprintf("%s %s%s%s%s%s", dot, state, plan, ctx, elapsed, fb))
+	return joinStatus(m.width, left, mid, right, fmt.Sprintf("%s %s%s%s%s%s%s", dot, state, plan, ctx, mcpseg, elapsed, fb))
 }
 
 // joinStatus fits left/tip/state/right on one row, dropping the tip first.
@@ -1127,9 +1164,22 @@ func (m Model) approvalView() string {
 	for _, ln := range wrapLines(p.Detail, max(20, m.width-12)) {
 		b.WriteString(dimStyle.Render("  "+ln) + "\n")
 	}
-	b.WriteString("\n" + okStyle.Render("  [y] allow") + dimStyle.Render("    ") + errStyle.Render("[n] deny"))
-	return boxStyle.Render(noticeStyle.Render(b.String()))
+	b.WriteString("\n")
+	labels := map[string]string{"once": "[y] allow once", "always": "[a] allow always", "reject": "[n] reject"}
+	for i, opt := range approvalOptions {
+		label := "  " + labels[opt] + "  "
+		if i == m.apprIdx%len(approvalOptions) {
+			b.WriteString(okStyle.Render(label))
+		} else {
+			b.WriteString(dimStyle.Render(label))
+		}
+	}
+	b.WriteString(dimStyle.Render("\n\n  ←/→ choose · enter confirms · session-scoped"))
+	return boxStyle.Render(b.String())
 }
+
+// approvalOptions mirrors opencode: once / always / reject.
+var approvalOptions = []string{"once", "always", "reject"}
 
 func (m Model) helpView() string {
 	return boxStyle.Render(`Keys: enter send · ctrl+j newline · ↑/↓ history · pgup/pgdn or mouse wheel scroll · ctrl+p models · ? help · ctrl+c quit

@@ -100,14 +100,22 @@ func session(ctx context.Context, workdir string) (config.Config, *router.Regist
 }
 
 func terminalApprover(auto bool) ct.Approver {
+	always := map[string]bool{}
 	return func(action, detail string) bool {
-		if auto {
+		if auto || always[action] {
 			return true
 		}
-		fmt.Printf("\nZeuf wants approval — %s\n  %s\nApprove? [y/N] ", action, core.Redact(detail))
+		fmt.Printf("\nZeuf wants approval — %s\n  %s\nApprove? [y]es / [a]lways this session / [N]o ", action, core.Redact(detail))
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		line = strings.TrimSpace(strings.ToLower(line))
-		return line == "y" || line == "yes"
+		switch line {
+		case "a", "always":
+			always[action] = true
+			fmt.Printf("Always allowing this session: %s\n", action)
+			return true
+		default:
+			return line == "y" || line == "yes"
+		}
 	}
 }
 

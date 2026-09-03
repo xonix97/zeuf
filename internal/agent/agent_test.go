@@ -305,6 +305,28 @@ func TestParallelToolOrder(t *testing.T) {
 }
 
 // TestApprovalHub blocks the loop until the UI answers.
+func TestApprovalHubAlways(t *testing.T) {
+	hub := NewHub()
+	hub.AllowAlways("write file")
+	done := make(chan bool, 1)
+	go func() { done <- hub.Ask("write file", "/tmp/x") }()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Error("always-allowed action must approve")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("always-allowed Ask blocked")
+	}
+	select {
+	case req := <-hub.Requests:
+		t.Errorf("always-allowed Ask must not emit a request, got %+v", req)
+	case <-time.After(100 * time.Millisecond):
+	}
+	var nilHub *Hub
+	nilHub.AllowAlways("x") // must not panic
+}
+
 func TestApprovalHub(t *testing.T) {
 	hub := NewHub()
 	done := make(chan bool, 1)

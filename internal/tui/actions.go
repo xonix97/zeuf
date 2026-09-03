@@ -37,6 +37,12 @@ type ActionLogin struct{ Backend string } // "opencode" | "kilo"
 
 func (ActionLogin) action() {}
 
+// ActionAllowAlways records a session-scoped always-allow for an action
+// kind (e.g. "write file"), mirroring opencode's allow-always.
+type ActionAllowAlways struct{ Tool string }
+
+func (ActionAllowAlways) action() {}
+
 // PickerModel is one row of the /models picker (primitives only).
 type PickerModel struct {
 	FullID  string

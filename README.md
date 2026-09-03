@@ -50,7 +50,8 @@ whichever backends you want models from (`opencode auth login`,
 TUI keys: `enter` send · `ctrl+j` newline · `↑/↓` history · `pgup/pgdn`
 or mouse wheel scroll (scrolling releases follow; new output won't yank
 it back) · `ctrl+p` model picker · `?` help · `ctrl+c` quit. Sensitive
-tool actions pop an approval modal (`y`/`n`) — nothing destructive runs
+tool actions pop an approval modal (allow once / allow always this
+session / reject, ←/→ + enter) — nothing destructive runs
 silently, including in the TUI. Messages sent mid-turn queue as `(next)`
 (one slot, newest wins) and run when the current turn finishes, so turns
 never overlap.

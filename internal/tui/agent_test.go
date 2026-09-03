@@ -101,8 +101,8 @@ func TestToolStepLifecycle(t *testing.T) {
 		t.Errorf("completed step wrong: %+v", b)
 	}
 	view := m.renderBlocks(100)
-	if !strings.Contains(view, "✓") || !strings.Contains(view, "Read src/a.go") {
-		t.Errorf("rendered step missing check/summary:\n%s", view)
+	if !strings.Contains(view, "↳") || !strings.Contains(view, "Read src/a.go") {
+		t.Errorf("rendered step missing marker/summary:\n%s", view)
 	}
 }
 
@@ -113,8 +113,8 @@ func TestToolFailRendersCross(t *testing.T) {
 	if m.blocks[0].toolOk {
 		t.Error("failed step must not be ok")
 	}
-	if view := m.renderBlocks(100); !strings.Contains(view, "✗") {
-		t.Errorf("missing cross:\n%s", view)
+	if view := m.renderBlocks(100); !strings.Contains(view, "↳") || !strings.Contains(view, "Bash exit 3") {
+		t.Errorf("missing failed marker/summary:\n%s", view)
 	}
 }
 
@@ -484,7 +484,7 @@ func TestAgentViewSmoke(t *testing.T) {
 	m.handleEvent(Event{Kind: "done"})
 	m.fallbacks = 1
 	view := m.View()
-	for _, want := range []string{"main*", "/home/u/proj", "✓ Read a.go", "✓ find bug", "● fix it", "fix it", "spark", "plan 1/2", "fallbacks 1"} {
+	for _, want := range []string{"main*", "/home/u/proj", "↳ Read a.go", "✓ find bug", "● fix it", "fix it", "spark", "plan 1/2", "fallbacks 1"} {
 		if !strings.Contains(stripANSI(view), want) {
 			t.Errorf("view missing %q", want)
 		}

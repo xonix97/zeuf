@@ -100,6 +100,7 @@ func runTUI(ctx context.Context) error {
 	go func() {
 		events <- tui.Event{Kind: "status", Text: statusFor(reg, "")}
 		events <- tui.Event{Kind: "session", Detail: sessionDetail(tools)}
+		events <- tui.Event{Kind: "mcp", Text: fmt.Sprint(mcpHealthy(mgr)), Detail: fmt.Sprint(mcpFailed(mgr))}
 		events <- tui.Event{Kind: "system", Text: fmt.Sprintf("Zeuf ready — %d free models across %d backends. Type a task, /quit to exit.", len(router.FreeOnly(reg.Models())), len(reg.Backends()))}
 		for {
 			select {
@@ -116,7 +117,7 @@ func runTUI(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				handleTUIAction(ctx, act, &prefs, reg, events)
+				handleTUIAction(ctx, act, &prefs, reg, events, hub)
 			}
 		}
 	}()
@@ -244,9 +245,11 @@ func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *r
 	return false
 }
 
-// handleTUIAction applies picker/wizard outcomes from the TUI.
-func handleTUIAction(ctx context.Context, act tui.Action, prefs *router.Prefs, reg *router.Registry, events chan tui.Event) {
+// handleTUIAction applies picker/wizard/modal outcomes from the TUI.
+func handleTUIAction(ctx context.Context, act tui.Action, prefs *router.Prefs, reg *router.Registry, events chan tui.Event, hub *agent.Hub) {
 	switch a := act.(type) {
+	case tui.ActionAllowAlways:
+		hub.AllowAlways(a.Tool)
 	case tui.ActionOpenPicker:
 		events <- tui.Event{Kind: "picker", Models: pickerRows(reg, prefs, true)}
 	case tui.ActionPin:
@@ -344,6 +347,27 @@ func fmtK(n int64) string {
 	default:
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 	}
+}
+
+// mcpHealthy/mcpFailed count manager backends for the footer segment.
+func mcpHealthy(mgr *mcp.Manager) int {
+	n := 0
+	for _, st := range mgr.Status() {
+		if st.OK {
+			n++
+		}
+	}
+	return n
+}
+
+func mcpFailed(mgr *mcp.Manager) int {
+	n := 0
+	for _, st := range mgr.Status() {
+		if !st.OK {
+			n++
+		}
+	}
+	return n
 }
 
 // pickerRows builds /models rows (free only unless all).
