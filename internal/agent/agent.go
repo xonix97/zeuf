@@ -111,6 +111,16 @@ func (a *Agent) RunTurn(ctx context.Context, sess *Session2, prefs router.Prefs)
 	if a.Hub != nil {
 		a.Tools.Policy.Approver = a.Hub.Ask
 	}
+	// Checkpoint every turn's file touches so /rewind can restore them.
+	// Depth>0 subagents share the registry and fold into the same turn.
+	if a.Depth == 0 {
+		a.Tools.BeginCheckpoint(sess.Task())
+		defer func() {
+			if cp := a.Tools.FinishCheckpoint(); cp != nil {
+				sess.Session.AddCheckpoint(*cp)
+			}
+		}()
+	}
 	return a.runDepth(ctx, sess, prefs, a.Depth)
 }
 

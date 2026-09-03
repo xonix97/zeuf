@@ -1136,7 +1136,11 @@ func (m Model) helpView() string {
 
 Commands: /models [all] — pick the active model · /connect — attach a backend
   /router auto|balanced|fastest|quality|pin <id>|unpin|fallback|nofallback
-  /providers · /session · /quit
+  /providers · /session · /agents · /quit
+  /sessions · /resume <id> — saved sessions
+  /rewind [n] · /checkpoints — restore files to before recent turn(s)
+  /skills · /skill <name> — skill playbooks
+  /mcp — MCP servers and tools
 
 While a turn runs, further messages queue as (next) — one slot, newest wins.
 Tool steps show a spinner while running, then ✓/✗ with elapsed time.

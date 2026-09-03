@@ -12,8 +12,10 @@ import (
 	"zeuf/internal/config"
 	"zeuf/internal/core"
 	ctools "zeuf/internal/core/tools"
+	"zeuf/internal/mcp"
 	"zeuf/internal/providers/direct"
 	"zeuf/internal/router"
+	"zeuf/internal/skills"
 	"zeuf/internal/tui"
 )
 
@@ -38,6 +40,8 @@ func runTUI(ctx context.Context) error {
 	}
 	prefs := prefsFrom(cfg)
 	refreshNow(ctx, reg)
+	mgr := attachMCP(ctx, cfg, tools)
+	defer mgr.Close()
 
 	hub := agent.NewHub()
 	ag.Hub = hub
@@ -105,7 +109,7 @@ func runTUI(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				if handleTUILine(ctx, strings.TrimSpace(line), &prefs, reg, r, ag, sess, events, p) {
+				if handleTUILine(ctx, strings.TrimSpace(line), &prefs, reg, r, ag, sess, events, p, mgr) {
 					return
 				}
 			case act, ok := <-actions:
@@ -124,7 +128,7 @@ func runTUI(ctx context.Context) error {
 }
 
 // handleTUILine processes one submitted line. True means the UI should stop.
-func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *router.Registry, r *router.Router, ag *agent.Agent, sess *agent.Session2, events chan tui.Event, p *tea.Program) bool {
+func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *router.Registry, r *router.Router, ag *agent.Agent, sess *agent.Session2, events chan tui.Event, p *tea.Program, mgr *mcp.Manager) bool {
 	switch {
 	case line == "":
 		return false
@@ -139,13 +143,82 @@ func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *r
 		events <- tui.Event{Kind: "picker", Models: pickerRows(reg, prefs, line != "/models all")}
 		return false
 	case line == "/help":
-		events <- tui.Event{Kind: "text", Text: "Commands: /models [all] · /connect · /router … · /providers · /session · /quit  (press ? anytime)"}
+		events <- tui.Event{Kind: "text", Text: "Commands: /models [all] · /connect · /router … · /providers · /session · /agents · /sessions · /resume · /rewind · /skill · /mcp · /quit  (press ? anytime)"}
 		return false
 	case line == "/providers":
 		events <- tui.Event{Kind: "text", Text: "Backends: " + strings.Join(reg.Backends(), ", ")}
 		return false
 	case line == "/agents":
 		events <- tui.Event{Kind: "text", Text: formatAgents(ag.SnapshotSubs())}
+		return false
+	case line == "/sessions":
+		var b strings.Builder
+		list, err := core.ListSessions()
+		if err != nil {
+			events <- tui.Event{Kind: "error", Text: core.Redact(err.Error())}
+			return false
+		}
+		if len(list) == 0 {
+			b.WriteString("no saved sessions yet")
+		}
+		for _, s := range list {
+			fmt.Fprintf(&b, "%s  %s  %d turn(s)  %s\n", s.ID, s.Updated.Format("2006-01-02 15:04"), s.Turns, truncStr(s.Task, 50))
+		}
+		events <- tui.Event{Kind: "text", Text: strings.TrimRight(b.String(), "\n")}
+		return false
+	case line == "/checkpoints":
+		events <- tui.Event{Kind: "text", Text: formatCheckpoints(sess)}
+		return false
+	case line == "/skills":
+		events <- tui.Event{Kind: "text", Text: formatSkills(skills.Discover(ag.Tools.Workdir))}
+		return false
+	case line == "/mcp":
+		events <- tui.Event{Kind: "text", Text: formatMCP(mgr)}
+		return false
+	case strings.HasPrefix(line, "/resume"):
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			events <- tui.Event{Kind: "text", Text: "usage: /resume <id>  (see /sessions)"}
+			return false
+		}
+		loaded, err := core.LoadSession(parts[1])
+		if err != nil {
+			events <- tui.Event{Kind: "error", Text: core.Redact(err.Error())}
+			return false
+		}
+		sess.Session = loaded
+		note := ""
+		if wd, ok := loaded.Meta["workdir"]; ok && wd != "" && wd != ag.Tools.Workdir {
+			note = fmt.Sprintf(" (was in %s, now in %s)", wd, ag.Tools.Workdir)
+		}
+		events <- tui.Event{Kind: "text", Text: fmt.Sprintf("Resumed %s (%d message(s), %d checkpoint(s))%s", loaded.ID, len(loaded.Messages), len(loaded.Checkpoints), note)}
+		return false
+	case strings.HasPrefix(line, "/rewind"):
+		parts := strings.Fields(line)
+		n := 1
+		if len(parts) > 1 {
+			fmt.Sscanf(parts[1], "%d", &n)
+		}
+		out, err := agent.Rewind(sess, ag.Tools, n)
+		if err != nil {
+			events <- tui.Event{Kind: "error", Text: core.Redact(err.Error())}
+			return false
+		}
+		events <- tui.Event{Kind: "text", Text: strings.Join(out, "\n")}
+		return false
+	case strings.HasPrefix(line, "/skill"):
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			events <- tui.Event{Kind: "text", Text: "usage: /skill <name>  (see /skills)"}
+			return false
+		}
+		s, ok := skills.Find(ag.Tools.Workdir, parts[1])
+		if !ok {
+			events <- tui.Event{Kind: "text", Text: fmt.Sprintf("skill %q not found (see /skills)", parts[1])}
+			return false
+		}
+		sess.Session.AppendSystem("Skill \"" + s.Name + "\" loaded:\n" + s.Body)
+		events <- tui.Event{Kind: "text", Text: fmt.Sprintf("Skill %s loaded into context.", s.Name)}
 		return false
 	case line == "/session":
 		events <- tui.Event{Kind: "text", Text: sess.Summary()}
@@ -164,6 +237,9 @@ func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *r
 	events <- tui.Event{Kind: "task", Text: line}
 	if _, err := ag.RunTurn(ctx, sess, *prefs); err != nil {
 		events <- tui.Event{Kind: "error", Text: core.Redact(err.Error())}
+	}
+	if saveErr := saveSession(sess, ag.Tools.Workdir); saveErr != nil {
+		events <- tui.Event{Kind: "error", Text: "save session: " + core.Redact(saveErr.Error())}
 	}
 	return false
 }

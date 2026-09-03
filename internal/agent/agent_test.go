@@ -328,3 +328,74 @@ func TestApprovalHub(t *testing.T) {
 		t.Fatal("Ask did not return")
 	}
 }
+
+func rewindHarness(t *testing.T) (*Session2, *ct.Registry, string) {
+	t.Helper()
+	dir := t.TempDir()
+	tools := ct.NewRegistry(dir, ct.Policy{AutoApprove: true})
+	sess := NewSession("rw", "task", tools)
+	return sess, tools, dir
+}
+
+func TestRewindRestores(t *testing.T) {
+	ctx := context.Background()
+	sess, tools, dir := rewindHarness(t)
+	mustWrite := func(path, content string) {
+		t.Helper()
+		if _, err := tools.Execute(ctx, "write", `{"path":"`+path+`","content":"`+content+`"}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("a.txt", "v0")
+	tools.BeginCheckpoint("turn one")
+	mustWrite("a.txt", "v1")
+	mustWrite("b.txt", "new")
+	sess.Session.AddCheckpoint(*tools.FinishCheckpoint())
+	out, err := Rewind(sess, tools, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Errorf("restored lines = %q", out)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if string(data) != "v0" {
+		t.Errorf("a.txt = %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "b.txt")); !os.IsNotExist(err) {
+		t.Error("created file must be removed")
+	}
+	if len(sess.Session.Checkpoints) != 0 {
+		t.Error("consumed checkpoints must drop")
+	}
+}
+
+func TestRewindDenied(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	tools := ct.NewRegistry(dir, ct.Policy{Approver: func(a, d string) bool { return true }})
+	sess := NewSession("rw", "task", tools)
+	if _, err := tools.Execute(ctx, "write", `{"path":"a.txt","content":"v0"}`); err != nil {
+		t.Fatal(err)
+	}
+	tools.BeginCheckpoint("t")
+	if _, err := tools.Execute(ctx, "write", `{"path":"a.txt","content":"v1"}`); err != nil {
+		t.Fatal(err)
+	}
+	sess.Session.AddCheckpoint(*tools.FinishCheckpoint())
+	tools.Policy.Approver = func(a, d string) bool { return false }
+	if _, err := Rewind(sess, tools, 1); err == nil {
+		t.Error("denied rewind must fail")
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if string(data) != "v1" {
+		t.Errorf("denied rewind changed files: %q", data)
+	}
+}
+
+func TestRewindEmpty(t *testing.T) {
+	sess, tools, _ := rewindHarness(t)
+	if _, err := Rewind(sess, tools, 1); err == nil {
+		t.Error("expected no-checkpoints error")
+	}
+}

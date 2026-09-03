@@ -50,3 +50,53 @@ func TestSnapshotDeepCopy(t *testing.T) {
 		t.Error("snapshot shares message backing array")
 	}
 }
+
+func TestSessionStoreRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s := NewSession("s-1", "fix things", "")
+	s.AppendUser("hi")
+	s.AppendAssistant("done", nil)
+	s.AddUsage(Usage{Input: 10, Output: 2})
+	s.AddCheckpoint(Checkpoint{Label: "t", Files: []FileVersion{{Path: "/x", Before: "old", Existed: true}}})
+	s.Meta["workdir"] = dir
+	if err := SaveSession(s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSession("s-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) != 2 || got.TokensIn != 10 || len(got.Checkpoints) != 1 {
+		t.Errorf("roundtrip lost state: %+v", got)
+	}
+	if _, err := LoadSession("../evil"); err == nil {
+		t.Error("traversal id must fail")
+	}
+}
+
+func TestListSessions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if list, err := ListSessions(); err != nil || len(list) != 0 {
+		t.Fatalf("empty dir = %v %v", list, err)
+	}
+	a := NewSession("a", "first", "")
+	a.AppendUser("x")
+	if err := SaveSession(a); err != nil {
+		t.Fatal(err)
+	}
+	b := NewSession("b", "second", "")
+	b.AppendUser("x")
+	b.AppendUser("y")
+	if err := SaveSession(b); err != nil {
+		t.Fatal(err)
+	}
+	list, err := ListSessions()
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list = %v %v", list, err)
+	}
+	if list[0].ID != "b" || list[0].Turns != 2 || list[1].ID != "a" {
+		t.Errorf("order/counts wrong: %+v", list)
+	}
+}

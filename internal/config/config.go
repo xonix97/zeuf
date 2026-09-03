@@ -19,15 +19,23 @@ type DirectEndpoint struct {
 	APIKeyEnv string `json:"api_key_env"`
 }
 
+// MCPServer configures one Model Context Protocol server (stdio).
+type MCPServer struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+	Env     []string `json:"env,omitempty"`
+}
+
 // Config is the user configuration file.
 type Config struct {
-	BackendsOrder []string         `json:"backends_order,omitempty"`
-	Direct        []DirectEndpoint `json:"direct,omitempty"`
-	OpencodeServe string           `json:"opencode_serve_url,omitempty"`
-	KiloServe     string           `json:"kilo_serve_url,omitempty"`
-	Prefs         router.Prefs     `json:"prefs"`
-	AutoApprove   bool             `json:"auto_approve"`
-	Workdir       string           `json:"workdir,omitempty"`
+	BackendsOrder []string             `json:"backends_order,omitempty"`
+	Direct        []DirectEndpoint     `json:"direct,omitempty"`
+	MCPServers    map[string]MCPServer `json:"mcp_servers,omitempty"`
+	OpencodeServe string               `json:"opencode_serve_url,omitempty"`
+	KiloServe     string               `json:"kilo_serve_url,omitempty"`
+	Prefs         router.Prefs         `json:"prefs"`
+	AutoApprove   bool                 `json:"auto_approve"`
+	Workdir       string               `json:"workdir,omitempty"`
 }
 
 // Default returns the default configuration.

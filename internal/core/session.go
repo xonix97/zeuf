@@ -19,10 +19,28 @@ type Session struct {
 	PendingTools   []ToolCall        `json:"pending_tools,omitempty"`
 	TokensIn       int64             `json:"tokens_in"`
 	TokensOut      int64             `json:"tokens_out"`
+	Checkpoints    []Checkpoint      `json:"checkpoints,omitempty"`
 	SwitchTrail    []string          `json:"switch_trail"` // model FullIDs used, in order
 	Meta           map[string]string `json:"meta,omitempty"`
 	Created        time.Time         `json:"created"`
 	Updated        time.Time         `json:"updated"`
+}
+
+// FileVersion records a file's pre-turn content for rewind.
+// Before is empty when the file did not exist (Existed=false) or was too
+// large to snapshot (TooLarge=true, unrestorable).
+type FileVersion struct {
+	Path     string `json:"path"`
+	Before   string `json:"before,omitempty"`
+	Existed  bool   `json:"existed"`
+	TooLarge bool   `json:"too_large,omitempty"`
+}
+
+// Checkpoint groups one turn's first-touch file versions.
+type Checkpoint struct {
+	Label string        `json:"label"`
+	At    time.Time     `json:"at"`
+	Files []FileVersion `json:"files"`
 }
 
 // PlanStep is one user-visible unit of the current plan.
@@ -76,6 +94,21 @@ func (s *Session) AddUsage(u Usage) {
 	s.touch()
 }
 
+// AddCheckpoint records a finished turn's file versions (no-op when empty).
+func (s *Session) AddCheckpoint(cp Checkpoint) {
+	if len(cp.Files) == 0 {
+		return
+	}
+	s.Checkpoints = append(s.Checkpoints, cp)
+	s.touch()
+}
+
+// AppendSystem records a system-context message (skills, directives).
+func (s *Session) AppendSystem(content string) {
+	s.Messages = append(s.Messages, Message{Role: RoleSystem, Content: content})
+	s.touch()
+}
+
 // NoteFile remembers an inspected file (deduplicated).
 func (s *Session) NoteFile(path string) {
 	for _, f := range s.FilesInspected {
@@ -101,6 +134,10 @@ func (s *Session) Snapshot() *Session {
 	cp.FilesInspected = append([]string(nil), s.FilesInspected...)
 	cp.PendingTools = append([]ToolCall(nil), s.PendingTools...)
 	cp.SwitchTrail = append([]string(nil), s.SwitchTrail...)
+	cp.Checkpoints = append([]Checkpoint(nil), s.Checkpoints...)
+	for i := range cp.Checkpoints {
+		cp.Checkpoints[i].Files = append([]FileVersion(nil), s.Checkpoints[i].Files...)
+	}
 	cp.Meta = map[string]string{}
 	for k, v := range s.Meta {
 		cp.Meta[k] = v

@@ -58,7 +58,7 @@ use --plain for line-based output, or a subcommand for one-shot use.`,
 	root.PersistentFlags().Bool("tui", false, "force the full-screen TUI (default when interactive)")
 	root.PersistentFlags().Bool("plain", false, "force plain CLI output instead of the TUI")
 
-	root.AddCommand(initCmd(), runCmd(), modelsCmd(), providersCmd(), configCmd(), doctorCmd(), tuiCmd(), connectCmd())
+	root.AddCommand(initCmd(), runCmd(), modelsCmd(), providersCmd(), configCmd(), doctorCmd(), tuiCmd(), connectCmd(), sessionsCmd(), mcpCmd())
 	return root
 }
 
@@ -145,13 +145,32 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			mgr := attachMCP(ctx, cfg, tools)
+			defer mgr.Close()
 			prefs := prefsFrom(cfg)
 			fmt.Fprintln(os.Stderr, "zeuf: discovering models…")
 			refreshNow(ctx, reg)
-			sess := agent.NewSession(newID(), task, tools)
+			var sess *agent.Session2
+			if resumeID, _ := cmd.Flags().GetString("resume"); resumeID != "" {
+				loaded, err := core.LoadSession(resumeID)
+				if err != nil {
+					return err
+				}
+				sess = agent.NewSession(loaded.ID, task, tools)
+				sess.Session = loaded
+				fmt.Fprintf(os.Stderr, "zeuf: resumed session %s (%d message(s))\n", loaded.ID, len(loaded.Messages))
+			} else {
+				sess = agent.NewSession(newID(), task, tools)
+			}
 			sess.AppendUser(task)
 			state := wireOutput(ag, r)
 			out, err := ag.RunTurn(ctx, sess, prefs)
+			if saveErr := saveSession(sess, tools.Workdir); saveErr != nil {
+				fmt.Fprintf(os.Stderr, "zeuf: save session: %v\n", core.Redact(saveErr.Error()))
+			}
+			if err != nil {
+				return err
+			}
 			if err != nil {
 				return err
 			}
@@ -167,6 +186,7 @@ func runCmd() *cobra.Command {
 	}
 	c.Flags().StringVarP(&flagModel, "model", "m", "", "pin a model (provider/id or id)")
 	c.Flags().StringVar(&flagMode, "mode", "", "routing mode: auto|balanced|fastest|quality")
+	c.Flags().String("resume", "", "resume a saved session id (see `zeuf sessions`)")
 	return c
 }
 
@@ -374,6 +394,9 @@ func doctorCmd() *cobra.Command {
 			cfg, _ := config.Load()
 			for _, d := range cfg.Direct {
 				fmt.Printf("  direct %-10s %s key: %s\n", d.Name, d.BaseURL, KeyStatus(d))
+			}
+			for name := range cfg.MCPServers {
+				fmt.Printf("  mcp %-14s (see /mcp when running)\n", name)
 			}
 			_, reg, _, _, _, err := session(ctx, "")
 			if err != nil {

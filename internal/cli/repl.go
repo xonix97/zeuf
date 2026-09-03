@@ -9,7 +9,10 @@ import (
 
 	"zeuf/internal/agent"
 	"zeuf/internal/core"
+	ct "zeuf/internal/core/tools"
+	"zeuf/internal/mcp"
 	"zeuf/internal/router"
+	"zeuf/internal/skills"
 )
 
 // interactive runs the REPL coding session: the core milestone workflow.
@@ -21,6 +24,8 @@ func interactive(ctx context.Context, useTUI bool) error {
 	if err != nil {
 		return err
 	}
+	mgr := attachMCP(ctx, cfg, tools)
+	defer mgr.Close()
 	prefs := prefsFrom(cfg)
 	fmt.Println("Zeuf — your coding agent. Type /help for commands, /quit to exit.")
 	fmt.Fprintln(os.Stderr, "discovering models…")
@@ -42,7 +47,7 @@ func interactive(ctx context.Context, useTUI bool) error {
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
-			if handleSlash(line, &prefs, reg, sess, ag) {
+			if handleSlash(line, &prefs, reg, sess, ag, tools, mgr) {
 				return nil
 			}
 			continue
@@ -53,11 +58,14 @@ func interactive(ctx context.Context, useTUI bool) error {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\nerror: %s\n", core.Redact(err.Error()))
 		}
+		if saveErr := saveSession(sess, tools.Workdir); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "\nwarning: save session: %v\n", core.Redact(saveErr.Error()))
+		}
 		_ = out
 	}
 }
 
-func handleSlash(line string, prefs *router.Prefs, reg *router.Registry, sess *agent.Session2, ag *agent.Agent) (quit bool) {
+func handleSlash(line string, prefs *router.Prefs, reg *router.Registry, sess *agent.Session2, ag *agent.Agent, treg *ct.Registry, mgr *mcp.Manager) (quit bool) {
 	parts := strings.Fields(line)
 	switch parts[0] {
 	case "/quit", "/exit", "/q":
@@ -70,6 +78,13 @@ func handleSlash(line string, prefs *router.Prefs, reg *router.Registry, sess *a
 /models [all]                        — pick the active model
 /connect                             — attach a new model backend
 /agents                              — list subagents this session
+/sessions                            — list saved sessions
+/resume <id>                         — resume a saved session
+/rewind [n]                          — restore files to before recent turn(s)
+/checkpoints                         — list rewind points
+/skills                              — list skill playbooks
+/skill <name>                        — load a skill into context
+/mcp                                 — list MCP servers and tools
 /providers                           — list backends
 /session                             — show session summary
 /quit                                — exit`)
@@ -121,6 +136,65 @@ func handleSlash(line string, prefs *router.Prefs, reg *router.Registry, sess *a
 		}
 	case "/agents":
 		fmt.Println(formatAgents(ag.SnapshotSubs()))
+	case "/sessions":
+		list, err := core.ListSessions()
+		if err != nil {
+			fmt.Println("sessions failed:", err)
+			break
+		}
+		if len(list) == 0 {
+			fmt.Println("no saved sessions yet")
+			break
+		}
+		for _, s := range list {
+			fmt.Printf("%s  %s  %d turn(s)  %s\n", s.ID, s.Updated.Format("2006-01-02 15:04"), s.Turns, truncStr(s.Task, 60))
+		}
+	case "/resume":
+		if len(parts) < 2 {
+			fmt.Println("usage: /resume <id>  (see /sessions)")
+			break
+		}
+		loaded, err := core.LoadSession(parts[1])
+		if err != nil {
+			fmt.Println("resume failed:", err)
+			break
+		}
+		sess.Session = loaded
+		if wd, ok := loaded.Meta["workdir"]; ok && wd != "" && wd != treg.Workdir {
+			fmt.Printf("note: session was in %s, now in %s\n", wd, treg.Workdir)
+		}
+		fmt.Printf("resumed %s (%d message(s), %d checkpoint(s))\n", loaded.ID, len(loaded.Messages), len(loaded.Checkpoints))
+	case "/rewind":
+		n := 1
+		if len(parts) > 1 {
+			fmt.Sscanf(parts[1], "%d", &n)
+		}
+		out, err := agent.Rewind(sess, treg, n)
+		if err != nil {
+			fmt.Println("rewind failed:", err)
+			break
+		}
+		for _, ln := range out {
+			fmt.Println(ln)
+		}
+	case "/checkpoints":
+		fmt.Println(formatCheckpoints(sess))
+	case "/skills":
+		fmt.Println(formatSkills(skills.Discover(treg.Workdir)))
+	case "/skill":
+		if len(parts) < 2 {
+			fmt.Println("usage: /skill <name>  (see /skills)")
+			break
+		}
+		s, ok := skills.Find(treg.Workdir, parts[1])
+		if !ok {
+			fmt.Printf("skill %q not found (see /skills)\n", parts[1])
+			break
+		}
+		sess.Session.AppendSystem("Skill \"" + s.Name + "\" loaded:\n" + s.Body)
+		fmt.Printf("skill %s loaded into context\n", s.Name)
+	case "/mcp":
+		fmt.Println(formatMCP(mgr))
 	case "/session":
 		fmt.Println(sess.Summary())
 	default:

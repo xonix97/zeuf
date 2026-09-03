@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"zeuf/internal/core"
 )
 
 const maxOutputBytes = 32 * 1024
@@ -70,6 +72,70 @@ type Registry struct {
 	Workdir string
 	Policy  Policy
 	plan    *PlanStore
+
+	snapMu sync.Mutex
+	curCp  *core.Checkpoint
+}
+
+// maxSnapshotBytes caps one rewind snapshot; larger files are recorded
+// unrestorable rather than bloating sessions.
+const maxSnapshotBytes = 512 * 1024
+
+// BeginCheckpoint starts collecting first-touch file versions under label.
+func (r *Registry) BeginCheckpoint(label string) {
+	r.snapMu.Lock()
+	defer r.snapMu.Unlock()
+	r.curCp = &core.Checkpoint{Label: label, At: time.Now()}
+}
+
+// FinishCheckpoint closes the open checkpoint, returning nil when nothing
+// was touched (callers then record nothing).
+func (r *Registry) FinishCheckpoint() *core.Checkpoint {
+	r.snapMu.Lock()
+	defer r.snapMu.Unlock()
+	cp := r.curCp
+	r.curCp = nil
+	if cp == nil || len(cp.Files) == 0 {
+		return nil
+	}
+	return cp
+}
+
+// snapshotFile records a file's current content once per checkpoint.
+// Call before mutating.
+func (r *Registry) snapshotFile(abs string) {
+	r.snapMu.Lock()
+	defer r.snapMu.Unlock()
+	if r.curCp == nil {
+		return
+	}
+	for _, f := range r.curCp.Files {
+		if f.Path == abs {
+			return // first-touch wins
+		}
+	}
+	fv := core.FileVersion{Path: abs}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return // unreadable: don't pretend
+		}
+		fv.Existed = false
+	} else {
+		fv.Existed = true
+		if len(data) > maxSnapshotBytes {
+			fv.TooLarge = true
+		} else {
+			fv.Before = string(data)
+		}
+	}
+	r.curCp.Files = append(r.curCp.Files, fv)
+}
+
+// RequestApproval asks the configured approver (modal/prompt/auto). It
+// returns false with no UI attached — sensitive actions stay denied.
+func (r *Registry) RequestApproval(action, detail string) bool {
+	return r.approve(action, detail)
 }
 
 // PlanStore is the backing state for the `plan` tool.
@@ -222,6 +288,7 @@ func (r *Registry) registerDefaults() {
 					return fail("write %s denied by approval policy", abs)
 				}
 			}
+			r.snapshotFile(abs)
 			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 				return fail("mkdir: %v", err)
 			}
@@ -250,6 +317,7 @@ func (r *Registry) registerDefaults() {
 					return fail("edit %s denied by approval policy", abs)
 				}
 			}
+			r.snapshotFile(abs)
 			data, err := os.ReadFile(abs)
 			if err != nil {
 				return fail("read %s: %v", a.Path, err)

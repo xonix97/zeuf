@@ -28,6 +28,43 @@ func TestEditDiffStat(t *testing.T) {
 	}
 }
 
+func TestCheckpointFirstTouch(t *testing.T) {
+	ctx := context.Background()
+	r := testReg(t, true)
+	if _, err := r.Execute(ctx, "write", `{"path":"a.txt","content":"v1"}`); err != nil {
+		t.Fatal(err)
+	}
+	r.BeginCheckpoint("turn one")
+	if _, err := r.Execute(ctx, "edit", `{"path":"a.txt","old_string":"v1","new_string":"v2"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Execute(ctx, "edit", `{"path":"a.txt","old_string":"v2","new_string":"v3"}`); err != nil {
+		t.Fatal(err)
+	}
+	cp := r.FinishCheckpoint()
+	if cp == nil || len(cp.Files) != 1 {
+		t.Fatalf("checkpoint = %+v", cp)
+	}
+	// First touch wins: original content preserved, not intermediate.
+	if cp.Files[0].Before != "v1" || !cp.Files[0].Existed {
+		t.Errorf("snapshot = %+v", cp.Files[0])
+	}
+	// Created files record absence.
+	r.BeginCheckpoint("turn two")
+	if _, err := r.Execute(ctx, "write", `{"path":"new.txt","content":"x"}`); err != nil {
+		t.Fatal(err)
+	}
+	cp = r.FinishCheckpoint()
+	if cp == nil || cp.Files[0].Existed {
+		t.Errorf("created file must record absence: %+v", cp)
+	}
+	// Empty checkpoint finishes nil.
+	r.BeginCheckpoint("idle")
+	if cp := r.FinishCheckpoint(); cp != nil {
+		t.Errorf("empty checkpoint = %+v", cp)
+	}
+}
+
 func TestGitInfoOutsideRepo(t *testing.T) {
 	r := testReg(t, true)
 	if branch, _ := r.GitInfo(); branch != "" {

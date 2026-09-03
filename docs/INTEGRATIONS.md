@@ -56,6 +56,9 @@ excluded from the free set.
   reconstruction, routing, fallback, approvals policy, UI. The full
   history (system prompt, plan, files inspected, tool results) is folded
   into every delegated turn, so a model switch continues the same task.
+  Every delegated prompt also carries an action directive (act in the
+  workdir with tools, verify, summarize briefly) so gateway agents
+  implement tasks instead of dictating code.
 - Adding a provider later means implementing `providers.Adapter`
   (`ListModels`, `Chat`, `Stream`, `Health`) — the agent never changes.
 
