@@ -1,0 +1,41 @@
+# Integration mechanisms (verified, 2026-09-03)
+
+Before implementation we inspected what OpenCode (`1.18.23`) and Kilo
+Code (`7.5.6`) can actually expose. Both are the same lineage (headless
+`serve` + `run` CLI), and both gate their hosted models behind the
+user's own login. There is **no documented raw-completions API** for
+their gateway models — the supported programmatic surfaces are:
+
+## Verified surfaces (all local, all using the user's own credentials)
+
+| Mechanism | OpenCode | Kilo | Used for |
+|-----------|----------|------|----------|
+| `<bin> models [--verbose]` | ✅ plain + full JSON per model (id, limits, `toolcall`) | ✅ same shape | discovery (`cligw.ParseVerbose`) |
+| `<bin> providers list` / `<bin> auth list` | ✅ | ✅ | health without spending quota |
+| `<bin> run --format json -m <model> <prompt>` | ✅ JSONL (`step_start`, `text`, `step_finish`, `error`) | ✅ same envelope | one delegated turn per Zeuf turn |
+| `<bin> serve` HTTP API (`/provider`, `/config`, `/session`, …) | ✅ probed live | ✅ same routes | optional richer discovery |
+
+Verified live: `opencode run --format json -m opencode/mimo-v2.5-free`
+returned streamed text events; `models --verbose` returned per-model
+JSON with `limit.context` and `capabilities.toolcall`; unknown models
+yield `{"type":"error",…}` events.
+
+## Consequences for the design
+
+- **Direct providers** (`direct/*`): Zeuf owns the complete loop —
+  OpenAI-compatible chat + tools + SSE streaming over HTTPS.
+- **Gateway backends** (`opencode`, `kilo`): Zeuf delegates each turn to
+  the user's own CLI/server (the integration these tools explicitly
+  support) and keeps everything else: agent state, transcript
+  reconstruction, routing, fallback, approvals policy, UI. The full
+  history (system prompt, plan, files inspected, tool results) is folded
+  into every delegated turn, so a model switch continues the same task.
+- Adding a provider later means implementing `providers.Adapter`
+  (`ListModels`, `Chat`, `Stream`, `Health`) — the agent never changes.
+
+## What Zeuf will not do
+
+- No reading of credential files, no token replay outside the user's own
+  tools, no scraping, no private-endpoint reverse engineering, no quota
+  bypass. Rate-limit/quota errors propagate as classified failures and
+  trigger legitimate fallback to another backend.
