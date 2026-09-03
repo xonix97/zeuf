@@ -3,6 +3,8 @@ package router
 import (
 	"strings"
 	"time"
+
+	"zeuf/internal/core"
 )
 
 // TaskReq captures what a task needs from a model.
@@ -174,6 +176,11 @@ func Rank(models []Entry, req TaskReq, prefs Prefs, t *Tracker, scorer Scorer) [
 			}
 		}
 	}
+	// Never send a turn to a model observed as unusable (auth failure,
+	// quota out, offline, rate limited) while usable ones exist. As a last
+	// resort the dead ones are still attempted — a clear error beats
+	// silence, and state may have recovered.
+	models = usableModels(models)
 	var out []Scored
 	for _, e := range models {
 		s, ok := scorer(e, req, prefs, t)
@@ -183,6 +190,22 @@ func Rank(models []Entry, req TaskReq, prefs Prefs, t *Tracker, scorer Scorer) [
 	}
 	sortByScore(out)
 	return out
+}
+
+// usableModels prefers models not observed as dead. Availability here is
+// live (the registry folds tracker state into it).
+func usableModels(models []Entry) []Entry {
+	var ok []Entry
+	for _, e := range models {
+		switch e.Model.Availability {
+		case core.AvailAvailable, core.AvailUnknown, "":
+			ok = append(ok, e)
+		}
+	}
+	if len(ok) > 0 {
+		return ok
+	}
+	return models
 }
 
 func sortByScore(s []Scored) {

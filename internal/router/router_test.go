@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,39 @@ func entries(t *testing.T) []Entry {
 	return []Entry{
 		{Model: mock.Model("pa", "a1", 0.9, 200000, true), Backend: ma},
 		{Model: mock.Model("pb", "b1", 0.5, 200000, true), Backend: mb},
+	}
+}
+
+func TestRankSkipsDeadBackends(t *testing.T) {
+	reg := NewRegistry()
+	es := entries(t)
+	dead := mock.Model("pg", "g1", 0.99, 1000000, true)
+	dead.Availability = core.AvailAuthError
+	dead.LastError = "no gemini auth"
+	mg := mock.New("backend-g", nil, nil)
+	es = append(es, Entry{Model: dead, Backend: mg})
+	reg.SetModels(es)
+	ranked := New(reg).Ranked(TaskReq{}, DefaultPrefs())
+	for _, s := range ranked {
+		if s.Entry.Model.ID == "g1" {
+			t.Errorf("logged-out model must not be ranked while usable ones exist: %+v", ranked)
+		}
+	}
+	if len(ranked) != 2 {
+		t.Errorf("want the 2 usable models, got %d", len(ranked))
+	}
+}
+
+func TestRankLastResortWhenAllDead(t *testing.T) {
+	reg := NewRegistry()
+	es := entries(t)
+	for i := range es {
+		es[i].Model.Availability = core.AvailQuotaOut
+	}
+	reg.SetModels(es)
+	ranked := New(reg).Ranked(TaskReq{}, DefaultPrefs())
+	if len(ranked) == 0 {
+		t.Error("all-dead pool must still attempt (clear error beats silence)")
 	}
 }
 
@@ -158,6 +192,110 @@ func TestFallbackDisabledTriesOnce(t *testing.T) {
 	}
 	if mb.Calls() != 0 {
 		t.Error("fallback disabled but backend-b was tried")
+	}
+}
+
+// TestAuthSkipsBackendSiblings: one auth failure poisons the whole backend
+// for the turn — its other models are skipped, not burned one by one.
+func TestAuthSkipsBackendSiblings(t *testing.T) {
+	ctx := context.Background()
+	authErr := &core.ProviderError{Code: core.ErrAuth, Provider: "backend-a", Message: "bad login"}
+	ma := mock.New("backend-a",
+		[]core.ModelInfo{mock.Model("pa", "a1", 0.9, 0, true), mock.Model("pa", "a2", 0.89, 0, true)},
+		[]mock.Script{{Err: authErr}})
+	mb := mock.New("backend-b",
+		[]core.ModelInfo{mock.Model("pb", "b1", 0.1, 0, true)},
+		[]mock.Script{{Resp: &core.ChatResponse{Content: "b wins"}}})
+	reg := NewRegistry()
+	reg.Register(ma)
+	reg.Register(mb)
+	reg.SetModels([]Entry{
+		{Model: mock.Model("pa", "a1", 0.9, 0, true), Backend: ma},
+		{Model: mock.Model("pa", "a2", 0.89, 0, true), Backend: ma},
+		{Model: mock.Model("pb", "b1", 0.1, 0, true), Backend: mb},
+	})
+	r := New(reg)
+	r.Backoff = 0
+	resp, _, err := r.Do(ctx, core.ChatRequest{}, TaskReq{}, DefaultPrefs(),
+		func(e Entry, rq core.ChatRequest) (*core.ChatResponse, error) {
+			return e.Backend.Chat(ctx, rq)
+		})
+	if err != nil {
+		t.Fatalf("fallback failed: %v", err)
+	}
+	if resp.Content != "b wins" {
+		t.Errorf("content = %q", resp.Content)
+	}
+	if ma.Calls() != 1 {
+		t.Errorf("backend-a tried %d times, want 1 (siblings skipped after auth failure)", ma.Calls())
+	}
+}
+
+// TestFailureTrail: a dead turn names every model attempted.
+func TestFailureTrail(t *testing.T) {
+	ctx := context.Background()
+	ma := mock.New("backend-a", []core.ModelInfo{mock.Model("pa", "a1", 0.9, 0, true)},
+		[]mock.Script{{Err: &core.ProviderError{Code: core.ErrOverloaded, Message: "down"}}})
+	mb := mock.New("backend-b", []core.ModelInfo{mock.Model("pb", "b1", 0.1, 0, true)},
+		[]mock.Script{{Err: &core.ProviderError{Code: core.ErrOverloaded, Message: "also down"}}})
+	reg := NewRegistry()
+	reg.Register(ma)
+	reg.Register(mb)
+	reg.SetModels([]Entry{
+		{Model: mock.Model("pa", "a1", 0.9, 0, true), Backend: ma},
+		{Model: mock.Model("pb", "b1", 0.1, 0, true), Backend: mb},
+	})
+	r := New(reg)
+	r.Backoff = 0
+	_, _, err := r.Do(ctx, core.ChatRequest{}, TaskReq{}, DefaultPrefs(),
+		func(e Entry, rq core.ChatRequest) (*core.ChatResponse, error) {
+			return e.Backend.Chat(ctx, rq)
+		})
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "pa/a1") || !strings.Contains(msg, "pb/b1") || !strings.Contains(msg, "tried:") {
+		t.Errorf("trail missing from error: %q", msg)
+	}
+}
+
+// TestDiversifyAfterTransientFailure: when backend-a overloads, the next
+// attempt prefers backend-b even though backend-a's second model ranks
+// higher — one flaky family must not eat the attempt budget.
+func TestDiversifyAfterTransientFailure(t *testing.T) {
+	ctx := context.Background()
+	over := &core.ProviderError{Code: core.ErrOverloaded, Message: "boom"}
+	ma := mock.New("backend-a",
+		[]core.ModelInfo{mock.Model("pa", "a1", 0.9, 0, true), mock.Model("pa", "a2", 0.89, 0, true)},
+		[]mock.Script{{Err: over}})
+	mb := mock.New("backend-b",
+		[]core.ModelInfo{mock.Model("pb", "b1", 0.1, 0, true)},
+		[]mock.Script{{Resp: &core.ChatResponse{Content: "b wins"}}})
+	reg := NewRegistry()
+	reg.Register(ma)
+	reg.Register(mb)
+	reg.SetModels([]Entry{
+		{Model: mock.Model("pa", "a1", 0.9, 0, true), Backend: ma},
+		{Model: mock.Model("pa", "a2", 0.89, 0, true), Backend: ma},
+		{Model: mock.Model("pb", "b1", 0.1, 0, true), Backend: mb},
+	})
+	r := New(reg)
+	r.Backoff = 0
+	var order []string
+	resp, _, err := r.Do(ctx, core.ChatRequest{}, TaskReq{}, DefaultPrefs(),
+		func(e Entry, rq core.ChatRequest) (*core.ChatResponse, error) {
+			order = append(order, e.Model.FullID())
+			return e.Backend.Chat(ctx, rq)
+		})
+	if err != nil {
+		t.Fatalf("fallback failed: %v", err)
+	}
+	if resp.Content != "b wins" {
+		t.Errorf("content = %q", resp.Content)
+	}
+	if len(order) != 2 || order[0] != "pa/a1" || order[1] != "pb/b1" {
+		t.Errorf("attempt order = %v, want [pa/a1 pb/b1]", order)
 	}
 }
 

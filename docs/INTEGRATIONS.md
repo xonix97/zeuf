@@ -30,6 +30,11 @@ folded into usage. Verified: unauthenticated runs return error code 41
 (mapped to auth failure); `reasoning` parts, `tool_use` completions and
 per-step `tokens` all parse. Auth = your `gemini` login or
 `GEMINI_API_KEY` (presence only — Zeuf never reads credential files).
+Note: Google end-of-lifed CLI OAuth for individuals (IneligibleTier —
+use a free AI Studio key instead); Zeuf classifies that wall as an auth
+failure so routing skips the backend while healthy ones exist, and a
+failed backend's sibling models are skipped within a turn since new
+credentials won't appear mid-turn.
 
 Gemini model IDs follow the official selection docs and API changelog:
 stable 2.5 pro/flash/flash-lite, 2.0-flash, 3.5/3.6-flash (+3.5-lite),

@@ -7,17 +7,19 @@ import (
 
 func TestClassifyMessage(t *testing.T) {
 	cases := map[string]ErrorCode{
-		"rate limit exceeded, retry in 42s":  ErrRateLimited,
-		"HTTP 429 too many requests":         ErrRateLimited,
-		"insufficient_quota: out of credits": ErrQuotaOut,
-		"quota exhausted for today":          ErrQuotaOut,
-		"unauthorized: invalid api key":      ErrAuth,
-		"401 login required":                 ErrAuth,
-		"model not found: foo":               ErrUnsupported,
-		"unsupported request":                ErrUnsupported,
-		"upstream overloaded, try again":     ErrOverloaded,
-		"connection refused":                 ErrNetwork,
-		"something completely novel":         ErrUnknown,
+		"rate limit exceeded, retry in 42s":        ErrRateLimited,
+		"HTTP 429 too many requests":               ErrRateLimited,
+		"insufficient_quota: out of credits":       ErrQuotaOut,
+		"quota exhausted for today":                ErrQuotaOut,
+		"unauthorized: invalid api key":            ErrAuth,
+		"401 login required":                       ErrAuth,
+		"Please set an Auth method":                ErrAuth,
+		"IneligibleTierError, no longer supported": ErrAuth,
+		"model not found: foo":                     ErrUnsupported,
+		"unsupported request":                      ErrUnsupported,
+		"upstream overloaded, try again":           ErrOverloaded,
+		"connection refused":                       ErrNetwork,
+		"something completely novel":               ErrUnknown,
 	}
 	for msg, want := range cases {
 		if got := ClassifyMessage(msg); got != want {

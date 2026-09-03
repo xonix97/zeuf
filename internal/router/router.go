@@ -2,6 +2,8 @@ package router
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"zeuf/internal/core"
@@ -65,12 +67,28 @@ func (r *Router) Do(
 	}
 	var prev string
 	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
-		cand := ranked[i]
-		if i > 0 && r.OnSwitch != nil {
-			r.OnSwitch(SwitchInfo{From: prev, To: cand.Entry.Model.FullID(), Reason: redactErr(lastErr), Index: i + 1})
+	var trail []string
+	authDead := map[string]bool{}
+	tried := 0
+	idx := 0
+	lastBackend, lastTransient := "", false
+	for tried < maxAttempts {
+		sel := diversify(ranked, idx, lastBackend, lastTransient)
+		if sel < 0 {
+			break
 		}
-		if i > 0 && r.Backoff > 0 {
+		ranked[sel], ranked[idx] = ranked[idx], ranked[sel]
+		cand := ranked[idx]
+		idx++
+		// An auth failure poisons the whole backend for this turn:
+		// different credentials won't appear for its next model.
+		if authDead[cand.Entry.Backend.Name()] {
+			continue
+		}
+		if tried > 0 && r.OnSwitch != nil {
+			r.OnSwitch(SwitchInfo{From: prev, To: cand.Entry.Model.FullID(), Reason: redactErr(lastErr), Index: tried + 1})
+		}
+		if tried > 0 && r.Backoff > 0 {
 			select {
 			case <-ctx.Done():
 				return nil, Entry{}, ctx.Err()
@@ -82,6 +100,8 @@ func (r *Router) Do(
 		attempt := req
 		attempt.Model = cand.Entry.Model.ID
 		resp, err := fn(cand.Entry, attempt)
+		tried++
+		lastBackend, lastTransient = cand.Entry.Backend.Name(), false
 		if err == nil {
 			r.Reg.Tracker().RecordSuccess(key, time.Since(start))
 			return resp, cand.Entry, nil
@@ -89,6 +109,13 @@ func (r *Router) Do(
 		r.Reg.Tracker().RecordFailure(key, err)
 		lastErr = err
 		prev = cand.Entry.Model.FullID()
+		trail = append(trail, cand.Entry.Model.FullID()+" ("+string(errCode(err))+")")
+		if isAuthErr(err) {
+			authDead[cand.Entry.Backend.Name()] = true
+		}
+		if isTransientErr(err) {
+			lastTransient = true
+		}
 		if !core.RetryableAcrossModels(err) {
 			return nil, Entry{}, err
 		}
@@ -99,7 +126,32 @@ func (r *Router) Do(
 	if lastErr == nil {
 		lastErr = &core.ProviderError{Code: core.ErrUnknown, Message: "all models failed"}
 	}
-	return nil, Entry{}, lastErr
+	return nil, Entry{}, withTrail(lastErr, trail)
+}
+
+// withTrail appends the per-attempt record so failures name every model
+// tried instead of only the last one.
+func withTrail(err error, trail []string) error {
+	if len(trail) == 0 {
+		return err
+	}
+	if pe, ok := err.(*core.ProviderError); ok && pe != nil {
+		cp := *pe
+		cp.Message = fmt.Sprintf("%s [tried: %s]", pe.Message, strings.Join(trail, ", "))
+		return &cp
+	}
+	return fmt.Errorf("%w [tried: %s]", err, strings.Join(trail, ", "))
+}
+
+func errCode(err error) core.ErrorCode {
+	if pe, ok := err.(*core.ProviderError); ok && pe != nil {
+		return pe.Code
+	}
+	return core.ErrUnknown
+}
+
+func isAuthErr(err error) bool {
+	return errCode(err) == core.ErrAuth
 }
 
 // DoStream is Do for streaming turns.
@@ -127,12 +179,26 @@ func (r *Router) DoStream(
 	}
 	var prev string
 	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
-		cand := ranked[i]
-		if i > 0 && r.OnSwitch != nil {
-			r.OnSwitch(SwitchInfo{From: prev, To: cand.Entry.Model.FullID(), Reason: redactErr(lastErr), Index: i + 1})
+	var trail []string
+	authDead := map[string]bool{}
+	tried := 0
+	idx := 0
+	lastBackend, lastTransient := "", false
+	for tried < maxAttempts {
+		sel := diversify(ranked, idx, lastBackend, lastTransient)
+		if sel < 0 {
+			break
 		}
-		if i > 0 && r.Backoff > 0 {
+		ranked[sel], ranked[idx] = ranked[idx], ranked[sel]
+		cand := ranked[idx]
+		idx++
+		if authDead[cand.Entry.Backend.Name()] {
+			continue
+		}
+		if tried > 0 && r.OnSwitch != nil {
+			r.OnSwitch(SwitchInfo{From: prev, To: cand.Entry.Model.FullID(), Reason: redactErr(lastErr), Index: tried + 1})
+		}
+		if tried > 0 && r.Backoff > 0 {
 			select {
 			case <-ctx.Done():
 				return nil, Entry{}, ctx.Err()
@@ -145,19 +211,34 @@ func (r *Router) DoStream(
 		attempt.Model = cand.Entry.Model.ID
 		ch, err := fn(cand.Entry, attempt)
 		if err != nil {
+			tried++
+			lastBackend, lastTransient = cand.Entry.Backend.Name(), isTransientErr(err)
 			r.Reg.Tracker().RecordFailure(key, err)
 			lastErr = err
 			prev = cand.Entry.Model.FullID()
+			trail = append(trail, cand.Entry.Model.FullID()+" ("+string(errCode(err))+")")
+			if isAuthErr(err) {
+				authDead[cand.Entry.Backend.Name()] = true
+			}
 			if !core.RetryableAcrossModels(err) {
 				return nil, Entry{}, err
 			}
 			continue
 		}
 		resp, err := consume(ch)
+		tried++
+		lastBackend, lastTransient = cand.Entry.Backend.Name(), false
 		if err != nil {
 			r.Reg.Tracker().RecordFailure(key, err)
 			lastErr = err
 			prev = cand.Entry.Model.FullID()
+			trail = append(trail, cand.Entry.Model.FullID()+" ("+string(errCode(err))+")")
+			if isAuthErr(err) {
+				authDead[cand.Entry.Backend.Name()] = true
+			}
+			if isTransientErr(err) {
+				lastTransient = true
+			}
 			if !core.RetryableAcrossModels(err) {
 				return nil, Entry{}, err
 			}
@@ -169,7 +250,37 @@ func (r *Router) DoStream(
 	if lastErr == nil {
 		lastErr = &core.ProviderError{Code: core.ErrUnknown, Message: "all models failed"}
 	}
-	return nil, Entry{}, lastErr
+	return nil, Entry{}, withTrail(lastErr, trail)
+}
+
+// diversify picks the next candidate index: after a transient backend
+// failure (overload/rate-limit/network — often family-wide), the best
+// remaining model from a different backend goes first so one flaky
+// family can't consume the whole attempt budget. Happy-path order is
+// untouched: this only engages once something already failed.
+func diversify(ranked []Scored, from int, failedBackend string, transient bool) int {
+	if from >= len(ranked) {
+		return -1
+	}
+	if transient && failedBackend != "" {
+		for j := from; j < len(ranked); j++ {
+			if ranked[j].Entry.Backend.Name() != failedBackend {
+				return j
+			}
+		}
+	}
+	return from
+}
+
+// isTransientErr reports failures that often affect a backend's whole
+// family at once (as opposed to per-model quota or dead credentials).
+func isTransientErr(err error) bool {
+	switch errCode(err) {
+	case core.ErrOverloaded, core.ErrRateLimited, core.ErrNetwork:
+		return true
+	default:
+		return false
+	}
 }
 
 func redactErr(err error) string {

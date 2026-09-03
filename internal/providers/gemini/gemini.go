@@ -113,7 +113,16 @@ func KnownModels() []core.ModelInfo {
 		mk("gemini-3.5-flash", "Gemini 3.5 Flash", meg, false),
 		mk("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite", 0, true),
 		mk("gemini-3.6-flash", "Gemini 3.6 Flash", meg, true),
+		withMaxOut(mk("gemini-3.7-flash", "Gemini 3.7 Flash", meg, false), 65536),
+		withMaxOut(mk("gemini-3.8-flash", "Gemini 3.8 Flash", meg, false), 65536),
 	}
+}
+
+// withMaxOut attaches a documented output limit. Used sparingly — only
+// where Google publishes the figure (3.7/3.8 Flash: 65,536).
+func withMaxOut(m core.ModelInfo, n int) core.ModelInfo {
+	m.Caps.MaxOutput = n
+	return m
 }
 
 // ListModels implements providers.Adapter. The CLI exposes no model
@@ -132,7 +141,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 	}
 	for i := range ms {
 		ms[i].Availability = core.AvailAuthError
-		ms[i].LastError = "not logged in: run `gemini` once or set GEMINI_API_KEY"
+		ms[i].LastError = "no gemini auth: set GEMINI_API_KEY (free AI Studio key) — CLI OAuth login is end-of-life for individuals"
 	}
 	return ms, nil
 }
@@ -143,7 +152,7 @@ func (a *Adapter) Health(ctx context.Context) (providers.Health, error) {
 		return providers.Health{OK: false, Message: "gemini CLI not installed", Checked: time.Now()}, nil
 	}
 	if !authed() {
-		return providers.Health{OK: false, Message: "not logged in: run `gemini` once or set GEMINI_API_KEY", Checked: time.Now()}, nil
+		return providers.Health{OK: false, Message: "no gemini auth: set GEMINI_API_KEY (free AI Studio key) — CLI OAuth login is end-of-life for individuals", Checked: time.Now()}, nil
 	}
 	return providers.Health{OK: true, Message: "ok", Checked: time.Now(), Models: len(KnownModels())}, nil
 }
@@ -190,7 +199,7 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 	var v map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &v); err != nil {
 		if werr != nil {
-			return nil, exitErr(req.Model, werr, firstLine(stderr.String()))
+			return nil, exitErr(req.Model, werr, meaningfulStderr(stderr.String()))
 		}
 		return nil, &core.ProviderError{Code: core.ErrUnknown, Provider: "gemini", Model: req.Model, Message: "decode gemini response: " + err.Error()}
 	}
@@ -214,7 +223,7 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 	if werr != nil {
 		// Non-zero exit with a parsed body: surface when empty.
 		if strings.TrimSpace(messageText(v)) == "" {
-			return nil, exitErr(req.Model, werr, firstLine(stderr.String()))
+			return nil, exitErr(req.Model, werr, meaningfulStderr(stderr.String()))
 		}
 	}
 	return &core.ChatResponse{Content: messageText(v), Model: req.Model, Provider: "gemini", Usage: usage}, nil
@@ -309,7 +318,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 		if !sawResult {
 			msg := strings.Join(warnings, "; ")
 			if msg == "" {
-				msg = firstLine(stderr.String())
+				msg = meaningfulStderr(stderr.String())
 			}
 			if werr != nil || msg != "" {
 				code := core.ClassifyMessage(msg + " " + werrString(werr))
@@ -511,6 +520,34 @@ func firstLine(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
+}
+
+// bannerPrefixes are CLI notices, never the actual failure.
+var bannerPrefixes = []string{
+	"YOLO mode is enabled",
+	"Approval mode overridden",
+}
+
+// meaningfulStderr skips banner notices and returns the first substantive
+// stderr line (e.g. the real Error authenticating: … line).
+func meaningfulStderr(s string) string {
+	for _, ln := range strings.Split(s, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		banner := false
+		for _, p := range bannerPrefixes {
+			if strings.HasPrefix(ln, p) {
+				banner = true
+				break
+			}
+		}
+		if !banner {
+			return ln
+		}
+	}
+	return ""
 }
 
 func nonEmpty(a, b string) string {

@@ -222,7 +222,7 @@ func ClassifyMessage(msg string) ErrorCode {
 		return ErrQuotaOut
 	case has("rate limit", "rate_limit", "rate-limited", "too many requests", "429", "retry in", "retry_after"):
 		return ErrRateLimited
-	case has("unauthorized", "unauthenticated", "invalid api key", "incorrect api key", "invalid_api_key", "401", "forbidden", "login required", "not logged in", "auth method", "authentication required", "api key required"):
+	case has("unauthorized", "unauthenticated", "invalid api key", "incorrect api key", "invalid_api_key", "401", "forbidden", "login required", "not logged in", "auth method", "authentication required", "api key required", "ineligible", "no longer supported"):
 		return ErrAuth
 	case has("model not found", "unknown model", "does not exist", "unsupported", "not supported", "404"):
 		return ErrUnsupported

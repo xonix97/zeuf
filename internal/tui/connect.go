@@ -258,7 +258,11 @@ func (m *Model) finishConnect(keyEnv, secret string) {
 		if m.actions != nil {
 			m.actions <- ActionLogin{Backend: c.loginBin}
 		}
-		c.note = fmt.Sprintf("Run `%s` in your normal terminal.\nZeuf will rescan models when you return.", c.loginCmd)
+		note := fmt.Sprintf("Run `%s` in your normal terminal.\nZeuf will rescan models when you return.", c.loginCmd)
+		if c.loginBin == "gemini" {
+			note = "Gemini CLI login is end-of-life for free tier.\nGet a free key at AI Studio and add it via /connect → Gemini.\nZeuf will rescan models when you return."
+		}
+		c.note = note
 		c.step = 4
 		m.blocks = append(m.blocks, block{kind: "system", text: "Login requested for " + c.loginBin + "; rescanning on return."})
 		m.refreshViewport()

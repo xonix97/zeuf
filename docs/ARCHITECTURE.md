@@ -47,6 +47,11 @@ user task
   `auth_failure`, `network_error`, `provider_overloaded`,
   `unsupported_request`) and every classified failure is fallback-eligible
   across models, bounded by `max_attempts`, cooldowns and backoff.
+- Routing skips models observed as unusable while usable ones exist (last
+  resort still attempts them); an auth failure poisons its whole backend
+  for the turn; after transient backend trouble the next attempt prefers
+  an untouched backend so one flaky family can't eat the budget. Failed
+  turns report every model attempted, not just the last error.
 - Credentials never appear in logs, errors, `doctor` output or the config file.
 
 ## What's next

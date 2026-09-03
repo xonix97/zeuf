@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 
 func TestKnownModelsHonest(t *testing.T) {
 	ms := KnownModels()
-	if len(ms) < 10 {
+	if len(ms) < 12 {
 		t.Fatalf("expected documented IDs, got %d", len(ms))
 	}
 	byID := map[string]core.ModelInfo{}
@@ -33,7 +34,7 @@ func TestKnownModelsHonest(t *testing.T) {
 		"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
 		"gemini-2.0-flash", "gemini-3-pro-preview", "gemini-3-flash-preview",
 		"gemini-3.1-pro", "gemini-3.5-flash", "gemini-3.5-flash-lite",
-		"gemini-3.6-flash",
+		"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash",
 	} {
 		if _, ok := byID[want]; !ok {
 			t.Errorf("documented model %s missing", want)
@@ -45,10 +46,27 @@ func TestKnownModelsHonest(t *testing.T) {
 			t.Errorf("%s should be free-tier marked", id)
 		}
 	}
-	for _, id := range []string{"gemini-2.5-pro", "gemini-3-pro-preview", "gemini-3.1-pro", "gemini-3.5-flash"} {
+	for _, id := range []string{"gemini-2.5-pro", "gemini-3-pro-preview", "gemini-3.1-pro", "gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash"} {
 		if byID[id].IsFree {
 			t.Errorf("%s must not be marked free", id)
 		}
+	}
+	// Paid newest pair carries documented limits, not guesses elsewhere.
+	for _, id := range []string{"gemini-3.7-flash", "gemini-3.8-flash"} {
+		m := byID[id]
+		if m.Caps.ContextLength != 1048576 || m.Caps.MaxOutput != 65536 {
+			t.Errorf("%s limits wrong: %+v", id, m.Caps)
+		}
+	}
+}
+
+func TestMeaningfulStderr(t *testing.T) {
+	in := "YOLO mode is enabled. All tool calls will be automatically approved.\n\nError authenticating: IneligibleTierError: migrate now\n"
+	if got := meaningfulStderr(in); !strings.Contains(got, "IneligibleTierError") {
+		t.Errorf("banner not skipped: %q", got)
+	}
+	if got := meaningfulStderr("\n  \n"); got != "" {
+		t.Errorf("blank must stay blank: %q", got)
 	}
 }
 

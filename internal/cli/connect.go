@@ -141,7 +141,8 @@ func RunConnectREPL(ctx context.Context, in *bufio.Reader, out func(string)) err
 		_, _ = in.ReadString('\n')
 		return errRescan{}
 	case loginGemini:
-		out("Run `gemini` once in your normal terminal to log in (or set GEMINI_API_KEY), then press enter here to rescan.\n")
+		out("Gemini CLI login is end-of-life for the free tier; get a free key at AI Studio instead.\n")
+		out("Add it via choice 2 (Gemini preset), then press enter here to rescan.\n")
 		_, _ = in.ReadString('\n')
 		return errRescan{}
 	}
