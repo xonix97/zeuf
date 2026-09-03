@@ -83,26 +83,36 @@ func authed() bool {
 	return false
 }
 
-// KnownModels returns the documented model IDs (official model-selection
-// docs: Auto Gemini 3 = pro/flash previews; Auto 2.5 = pro/flash; plus
-// flash-lite). Context is stated only where long-documented (2.5 family:
-// 1M); everything else — scores, quota — stays honestly unknown.
+// KnownModels returns the documented model IDs. Context is stated only
+// where publicly documented (the 1M-token Flash/Pro generations);
+// everything else stays honestly unknown. Models marked free are eligible
+// for Google's $0 tier (Gemini CLI Google login / AI Studio free quota) —
+// paid API keys and Vertex still meter, and remaining quota is never
+// exposed, so QuotaState stays unknown. Models without free-tier evidence
+// are listed but not marked free.
 func KnownModels() []core.ModelInfo {
-	mk := func(id, display string, ctx int) core.ModelInfo {
+	const meg = 1048576
+	mk := func(id, display string, ctx int, free bool) core.ModelInfo {
 		return core.ModelInfo{
 			ID: id, Provider: "gemini", DisplayName: display,
 			Caps: core.Capabilities{
 				ContextLength: ctx, SupportsTools: true, SupportsStreaming: true,
 			},
 			Scores: core.UnknownScores(), Availability: core.AvailUnknown,
-			QuotaState: "unknown",
+			QuotaState: "unknown", IsFree: free, CostKnown: free,
 		}
 	}
 	return []core.ModelInfo{
-		mk("gemini-2.5-pro", "Gemini 2.5 Pro", 1048576),
-		mk("gemini-2.5-flash", "Gemini 2.5 Flash", 1048576),
-		mk("gemini-3-pro-preview", "Gemini 3 Pro Preview", 0),
-		mk("gemini-3-flash-preview", "Gemini 3 Flash Preview", 0),
+		mk("gemini-2.5-pro", "Gemini 2.5 Pro", meg, false),
+		mk("gemini-2.5-flash", "Gemini 2.5 Flash", meg, true),
+		mk("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite", meg, true),
+		mk("gemini-2.0-flash", "Gemini 2.0 Flash", meg, true),
+		mk("gemini-3-pro-preview", "Gemini 3 Pro Preview", 0, false),
+		mk("gemini-3-flash-preview", "Gemini 3 Flash Preview", 0, false),
+		mk("gemini-3.1-pro", "Gemini 3.1 Pro", meg, false),
+		mk("gemini-3.5-flash", "Gemini 3.5 Flash", meg, false),
+		mk("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite", 0, true),
+		mk("gemini-3.6-flash", "Gemini 3.6 Flash", meg, true),
 	}
 }
 

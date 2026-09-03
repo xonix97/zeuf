@@ -13,22 +13,41 @@ import (
 
 func TestKnownModelsHonest(t *testing.T) {
 	ms := KnownModels()
-	if len(ms) < 4 {
+	if len(ms) < 10 {
 		t.Fatalf("expected documented IDs, got %d", len(ms))
 	}
-	seen := map[string]bool{}
+	byID := map[string]core.ModelInfo{}
 	for _, m := range ms {
-		if m.ID == "" || m.Provider != "gemini" || seen[m.ID] {
+		if m.ID == "" || m.Provider != "gemini" {
 			t.Errorf("bad model entry: %+v", m)
 		}
-		seen[m.ID] = true
-		if m.Scores.Coding >= 0 || m.QuotaState != "unknown" || m.IsFree {
-			t.Errorf("model must not fake scores/quota/price: %+v", m)
+		if _, dup := byID[m.ID]; dup {
+			t.Errorf("duplicate model %s", m.ID)
+		}
+		byID[m.ID] = m
+		if m.Scores.Coding >= 0 || m.QuotaState != "unknown" {
+			t.Errorf("model must not fake scores/quota: %+v", m)
 		}
 	}
-	for _, want := range []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-pro-preview", "gemini-3-flash-preview"} {
-		if !seen[want] {
+	for _, want := range []string{
+		"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+		"gemini-2.0-flash", "gemini-3-pro-preview", "gemini-3-flash-preview",
+		"gemini-3.1-pro", "gemini-3.5-flash", "gemini-3.5-flash-lite",
+		"gemini-3.6-flash",
+	} {
+		if _, ok := byID[want]; !ok {
 			t.Errorf("documented model %s missing", want)
+		}
+	}
+	// Free-tier family only; pro/paid models stay honestly unmarked.
+	for _, id := range []string{"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"} {
+		if !byID[id].IsFree {
+			t.Errorf("%s should be free-tier marked", id)
+		}
+	}
+	for _, id := range []string{"gemini-2.5-pro", "gemini-3-pro-preview", "gemini-3.1-pro", "gemini-3.5-flash"} {
+		if byID[id].IsFree {
+			t.Errorf("%s must not be marked free", id)
 		}
 	}
 }

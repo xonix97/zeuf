@@ -3,7 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"zeuf/internal/agent"
@@ -45,6 +47,98 @@ func TestPickerPinAction(t *testing.T) {
 		}
 	default:
 		t.Error("no pin action emitted")
+	}
+}
+
+func TestPickerFuzzyLive(t *testing.T) {
+	events := make(chan Event, 8)
+	m := NewFull(events, nil, nil)
+	m.width, m.height = 80, 24
+	m.openPicker([]PickerModel{
+		{FullID: "kilo/deepseek-chat", Display: "DeepSeek Chat", Detail: "kilo free"},
+		{FullID: "opencode/big-pickle", Display: "Big Pickle", Detail: "opencode free"},
+	})
+	// Fast cursor blink: the resolver would otherwise wait out real
+	// half-second blink timers on every keystroke.
+	m.picker.list.FilterInput.Cursor.BlinkSpeed = time.Millisecond
+	// Search bar must be live immediately — no leading "/" needed.
+	if m.picker.list.FilterInput.Value() != "" {
+		t.Fatal("filter should start empty")
+	}
+	for _, r := range []rune("dpsek") {
+		m = stepPicker(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	vis := m.picker.list.VisibleItems()
+	if len(vis) != 1 {
+		t.Fatalf("fuzzy 'dpsek' matched %d items, want 1", len(vis))
+	}
+	if it, ok := vis[0].(pickerItem); !ok || it.fullID != "kilo/deepseek-chat" {
+		t.Errorf("wrong match: %+v", vis[0])
+	}
+}
+
+// stepPicker feeds a message and resolves resulting commands, applying
+// filter matches back (bubbles filters asynchronously; blink/spinner
+// ticks are ignored, with a depth bound against rescheduling loops).
+func stepPicker(m Model, msg tea.Msg) Model {
+	updated, cmd := m.Update(msg)
+	m = updated.(Model)
+	var resolve func(c tea.Cmd, depth int)
+	resolve = func(c tea.Cmd, depth int) {
+		if c == nil || depth > 4 {
+			return
+		}
+		r := c()
+		if r == nil {
+			return
+		}
+		if b, ok := r.(tea.BatchMsg); ok {
+			for _, cc := range b {
+				if cc != nil {
+					resolve(cc, depth+1)
+				}
+			}
+			return
+		}
+		if cc, ok := r.(tea.Cmd); ok {
+			resolve(cc, depth+1)
+			return
+		}
+		applyFilterMsg(&m, r)
+	}
+	resolve(cmd, 0)
+	return m
+}
+
+func applyFilterMsg(m *Model, r tea.Msg) {
+	if fm, ok := r.(list.FilterMatchesMsg); ok {
+		updated, _ := m.Update(fm)
+		*m = updated.(Model)
+	}
+}
+
+func TestPickerEscClearsFilterFirst(t *testing.T) {
+	events := make(chan Event, 8)
+	m := NewFull(events, nil, nil)
+	m.width, m.height = 80, 24
+	m.openPicker([]PickerModel{{FullID: "kilo/a", Display: "A", Detail: "x"}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
+	m = updated.(Model)
+	if m.picker.list.FilterInput.Value() == "" {
+		t.Fatal("typing should fill the search bar")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(Model)
+	if m.mode != modePicker {
+		t.Fatal("first esc should clear the filter, not close")
+	}
+	if m.picker.list.FilterInput.Value() != "" {
+		t.Error("filter should be cleared")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(Model)
+	if m.mode != modeChat {
+		t.Error("second esc should close the picker")
 	}
 }
 

@@ -31,6 +31,16 @@ folded into usage. Verified: unauthenticated runs return error code 41
 per-step `tokens` all parse. Auth = your `gemini` login or
 `GEMINI_API_KEY` (presence only — Zeuf never reads credential files).
 
+Gemini model IDs follow the official selection docs and API changelog:
+stable 2.5 pro/flash/flash-lite, 2.0-flash, 3.5/3.6-flash (+3.5-lite),
+3.1-pro and the 3/3-flash previews. Context is stated only where publicly
+documented (the 1M generations); scores and quota stay unknown. The
+flash/flash-lite family plus 2.0-flash are marked free — they are
+eligible for Google's $0 tier (CLI login / AI Studio free quota) — while
+pro/preview and ambiguous IDs stay unmarked, since paid keys and Vertex
+still meter. Paid-only releases (e.g. 3.7/3.8 Flash) are deliberately
+excluded from the free set.
+
 ## Consequences for the design
 
 - **Direct providers** (`direct/*`): Zeuf owns the complete loop —
