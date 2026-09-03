@@ -477,7 +477,10 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 	if strings.Contains(req.Model, "/") {
 		model = req.Model
 	}
-	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model, promptFor(a.be.Workdir, req))
+	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model)
+	// The transcript travels on stdin, never argv: prompts carry session
+	// content (visible to local users via ps) and can exceed ARG_MAX.
+	c.Stdin = strings.NewReader(promptFor(a.be.Workdir, req))
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		return nil, &core.ProviderError{Code: core.ErrUnknown, Provider: a.be.Provider, Message: err.Error()}
@@ -531,7 +534,9 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 	if strings.Contains(req.Model, "/") {
 		model = req.Model
 	}
-	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model, promptFor(a.be.Workdir, req))
+	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model)
+	// Transcript on stdin, never argv (see Chat).
+	c.Stdin = strings.NewReader(promptFor(a.be.Workdir, req))
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		cancel()

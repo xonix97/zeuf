@@ -77,6 +77,40 @@ func TestStreamReasoningUsageTools(t *testing.T) {
 		t.Errorf("done usage = %+v", doneUsage)
 	}
 }
+
+// TestPromptTravelsOnStdin: session content must reach the backend via
+// stdin, never argv (ps-visible). The fixture records both channels.
+func TestPromptTravelsOnStdin(t *testing.T) {
+	dir := t.TempDir()
+	seenStdin := dir + "/stdin.txt"
+	seenArgs := dir + "/args.txt"
+	fixture := dir + "/fakebin"
+	script := "#!/bin/sh\n" +
+		"cat > " + seenStdin + "\n" +
+		"printf '%s' \"$*\" > " + seenArgs + "\n" +
+		"printf '%s\\n' '{\"type\":\"text\",\"part\":{\"type\":\"text\",\"text\":\"ok\"}}'\n"
+	if err := os.WriteFile(fixture, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := New(Backend{Binary: fixture, Provider: "fake", Workdir: dir, Timeout: 30 * time.Second})
+	secret := "SECRET-MARKER-42"
+	req := core.ChatRequest{Model: "m", Messages: []core.Message{{Role: core.RoleUser, Content: secret}}}
+	if _, err := a.Chat(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	stdin, _ := os.ReadFile(seenStdin)
+	if !strings.Contains(string(stdin), secret) {
+		t.Errorf("prompt missing from stdin: %q", stdin)
+	}
+	argv, _ := os.ReadFile(seenArgs)
+	if strings.Contains(string(argv), secret) {
+		t.Errorf("session content leaked into argv: %q", argv)
+	}
+	if !strings.Contains(string(argv), "-m") {
+		t.Errorf("model flag missing from argv: %q", argv)
+	}
+}
+
 func TestParseToolUse(t *testing.T) {
 	p := parseRunEvent(`{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","output":"DONE\n","title":"echo DONE","metadata":{"exit":0}}}}`)
 	if p.tool == nil || p.tool.Name != "bash" || !p.tool.Ok {

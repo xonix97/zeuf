@@ -59,6 +59,12 @@ excluded from the free set.
   Every delegated prompt also carries an action directive (act in the
   workdir with tools, verify, summarize briefly) so gateway agents
   implement tasks instead of dictating code.
+- CLI gateways that accept stdin prompts (`opencode run`, `kilo run`)
+  receive the transcript on stdin, never argv: prompts carry session
+  content (visible to local users via `ps`) and can exceed ARG_MAX.
+  Backends without a stdin prompt mode (`gemini -p` appends stdin to the
+  flag; `agy` only reads prompts via stream-json sessions) keep argv
+  invocation, documented per adapter.
 - Adding a provider later means implementing `providers.Adapter`
   (`ListModels`, `Chat`, `Stream`, `Health`) — the agent never changes.
 
