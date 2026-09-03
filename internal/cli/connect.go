@@ -128,15 +128,20 @@ func RunConnectREPL(ctx context.Context, in *bufio.Reader, out func(string)) err
 	for i, p := range Presets {
 		out(fmt.Sprintf("  %d) %s\n", i+1, p.Title))
 	}
-	out("  7) OpenCode login (own terminal) / 8) Kilo login (own terminal)\n")
-	choice := promptLine(in, out, "Choice [1-8]: ")
+	loginOpen, loginKilo, loginGemini := fmt.Sprint(len(Presets)+1), fmt.Sprint(len(Presets)+2), fmt.Sprint(len(Presets)+3)
+	out(fmt.Sprintf("  %s) OpenCode login / %s) Kilo login / %s) Gemini login (all in your own terminal)\n", loginOpen, loginKilo, loginGemini))
+	choice := promptLine(in, out, fmt.Sprintf("Choice [1-%d]: ", len(Presets)+3))
 	switch choice {
-	case "7":
+	case loginOpen:
 		out("Run `opencode auth login` in your normal terminal, then press enter here to rescan.\n")
 		_, _ = in.ReadString('\n')
 		return errRescan{}
-	case "8":
+	case loginKilo:
 		out("Run `kilo auth login` in your normal terminal, then press enter here to rescan.\n")
+		_, _ = in.ReadString('\n')
+		return errRescan{}
+	case loginGemini:
+		out("Run `gemini` once in your normal terminal to log in (or set GEMINI_API_KEY), then press enter here to rescan.\n")
 		_, _ = in.ReadString('\n')
 		return errRescan{}
 	}

@@ -17,8 +17,9 @@ type connectState struct {
 	preset   config.Preset
 	name     string
 	baseURL  string
-	isLogin  bool // opencode/kilo login path
+	isLogin  bool // CLI login path (opencode/kilo/gemini)
 	loginBin string
+	loginCmd string // how the user logs in, e.g. "opencode auth login"
 	inputs   []textinput.Model
 	focus    int
 	credKind int // 0 env, 1 paste
@@ -35,11 +36,23 @@ func (m *Model) openConnect() {
 }
 
 func connectKinds() []string {
-	kinds := make([]string, 0, len(config.Presets)+2)
+	kinds := make([]string, 0, len(config.Presets)+3)
 	for _, p := range config.Presets {
 		kinds = append(kinds, p.Title)
 	}
-	return append(kinds, "OpenCode login (in your terminal)", "Kilo login (in your terminal)")
+	return append(kinds,
+		"OpenCode login (in your terminal)",
+		"Kilo login (in your terminal)",
+		"Gemini login (in your terminal)",
+	)
+}
+
+// loginCommand tells the user how to authenticate each CLI backend.
+func loginCommand(bin string) string {
+	if bin == "gemini" {
+		return "gemini"
+	}
+	return bin + " auth login"
 }
 
 func (m Model) connectView() string {
@@ -214,9 +227,12 @@ func (c *connectState) chooseKind(idx int) {
 	c.isLogin = true
 	if idx == nk {
 		c.loginBin = "opencode"
-	} else {
+	} else if idx == nk+1 {
 		c.loginBin = "kilo"
+	} else {
+		c.loginBin = "gemini"
 	}
+	c.loginCmd = loginCommand(c.loginBin)
 	c.step = 4
 	c.note = ""
 }
@@ -242,7 +258,7 @@ func (m *Model) finishConnect(keyEnv, secret string) {
 		if m.actions != nil {
 			m.actions <- ActionLogin{Backend: c.loginBin}
 		}
-		c.note = fmt.Sprintf("Run `%s auth login` in your normal terminal.\nZeuf will rescan models when you return.", c.loginBin)
+		c.note = fmt.Sprintf("Run `%s` in your normal terminal.\nZeuf will rescan models when you return.", c.loginCmd)
 		c.step = 4
 		m.blocks = append(m.blocks, block{kind: "system", text: "Login requested for " + c.loginBin + "; rescanning on return."})
 		m.refreshViewport()

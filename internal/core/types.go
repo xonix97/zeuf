@@ -73,11 +73,13 @@ type ChatResponse struct {
 type StreamEventType string
 
 const (
-	EventToken StreamEventType = "token"
-	EventTool  StreamEventType = "tool_call"
-	EventDone  StreamEventType = "done"
-	EventError StreamEventType = "error"
-	EventInfo  StreamEventType = "info"
+	EventToken        StreamEventType = "token"
+	EventReasoning    StreamEventType = "reasoning"
+	EventTool         StreamEventType = "tool_call"
+	EventToolProgress StreamEventType = "tool_progress"
+	EventDone         StreamEventType = "done"
+	EventError        StreamEventType = "error"
+	EventInfo         StreamEventType = "info"
 )
 
 // StreamEvent is one normalized streaming unit.
@@ -86,7 +88,13 @@ type StreamEvent struct {
 	Delta     string          `json:"delta,omitempty"`
 	ToolCalls []ToolCall      `json:"tool_calls,omitempty"`
 	Usage     Usage           `json:"usage,omitempty"`
-	Err       error           `json:"-"`
+	// Tool carries the tool name for tool_progress events.
+	Tool string `json:"tool,omitempty"`
+	// Done marks a tool_progress completion (false = just started).
+	Done bool `json:"done,omitempty"`
+	// Ok reports delegated tool success for tool_progress completions.
+	Ok  bool  `json:"ok,omitempty"`
+	Err error `json:"-"`
 }
 
 // ---- Model metadata --------------------------------------------------------
@@ -214,7 +222,7 @@ func ClassifyMessage(msg string) ErrorCode {
 		return ErrQuotaOut
 	case has("rate limit", "rate_limit", "rate-limited", "too many requests", "429", "retry in", "retry_after"):
 		return ErrRateLimited
-	case has("unauthorized", "unauthenticated", "invalid api key", "incorrect api key", "invalid_api_key", "401", "forbidden", "login required", "not logged in"):
+	case has("unauthorized", "unauthenticated", "invalid api key", "incorrect api key", "invalid_api_key", "401", "forbidden", "login required", "not logged in", "auth method", "authentication required", "api key required"):
 		return ErrAuth
 	case has("model not found", "unknown model", "does not exist", "unsupported", "not supported", "404"):
 		return ErrUnsupported

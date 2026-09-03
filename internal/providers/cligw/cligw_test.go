@@ -1,11 +1,101 @@
 package cligw
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"zeuf/internal/core"
 )
+
+func TestParseReasoning(t *testing.T) {
+	p := parseRunEvent(`{"type":"reasoning","part":{"type":"reasoning","text":"first thought"}}`)
+	if p.reasoningDelta != "first thought" || p.textDelta != "" || p.perr != nil {
+		t.Errorf("reasoning misparsed: %+v", p)
+	}
+	// Reasoning must never leak into answer text.
+	var b strings.Builder
+	if err := ParseRunLine(`{"type":"reasoning","part":{"type":"reasoning","text":"hmm"}}`, &b); err != nil || b.Len() != 0 {
+		t.Errorf("reasoning leaked to text: %q %v", b.String(), err)
+	}
+}
+
+func TestParseStepFinishUsage(t *testing.T) {
+	p := parseRunEvent(`{"type":"step_finish","part":{"type":"step-finish","tokens":{"total":116,"input":98,"output":17,"reasoning":5}}}`)
+	if p.usage == nil || p.usage.Input != 98 || p.usage.Output != 17 || p.usage.Reasoning != 5 {
+		t.Errorf("usage misparsed: %+v", p.usage)
+	}
+	if p.textDelta != "" || p.perr != nil {
+		t.Errorf("step_finish must be silent: %+v", p)
+	}
+}
+
+func TestStreamReasoningUsageTools(t *testing.T) {
+	dir := t.TempDir()
+	fixture := dir + "/fakebin"
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' '{\"type\":\"reasoning\",\"part\":{\"type\":\"reasoning\",\"text\":\"thinking it over\"}}'\n" +
+		"printf '%s\\n' '{\"type\":\"text\",\"part\":{\"type\":\"text\",\"text\":\"final answer\"}}'\n" +
+		"printf '%s\\n' '{\"type\":\"tool_use\",\"part\":{\"type\":\"tool\",\"tool\":\"bash\",\"state\":{\"status\":\"completed\",\"output\":\"ok\\n\",\"title\":\"run tests\",\"metadata\":{\"exit\":0}}}}'\n" +
+		"printf '%s\\n' '{\"type\":\"step_finish\",\"part\":{\"type\":\"step-finish\",\"tokens\":{\"total\":60,\"input\":50,\"output\":10,\"reasoning\":2}}}'\n"
+	if err := os.WriteFile(fixture, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := New(Backend{Binary: fixture, Provider: "fake", Workdir: dir, Timeout: 30 * time.Second})
+	ch, err := a.Stream(context.Background(), core.ChatRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawReasoning, sawToken, sawTool bool
+	var doneUsage core.Usage
+	for ev := range ch {
+		switch ev.Type {
+		case core.EventReasoning:
+			sawReasoning = true
+			if !strings.Contains(ev.Delta, "thinking") {
+				t.Errorf("reasoning delta = %q", ev.Delta)
+			}
+		case core.EventToken:
+			sawToken = true
+		case core.EventToolProgress:
+			sawTool = true
+			if ev.Tool != "bash" || !ev.Ok {
+				t.Errorf("tool progress = %+v", ev)
+			}
+		case core.EventDone:
+			doneUsage = ev.Usage
+		case core.EventError:
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+	}
+	if !sawReasoning || !sawToken || !sawTool {
+		t.Errorf("missing events r=%v t=%v tool=%v", sawReasoning, sawToken, sawTool)
+	}
+	if doneUsage.Input != 50 || doneUsage.Output != 10 || doneUsage.Reasoning != 2 {
+		t.Errorf("done usage = %+v", doneUsage)
+	}
+}
+func TestParseToolUse(t *testing.T) {
+	p := parseRunEvent(`{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","output":"DONE\n","title":"echo DONE","metadata":{"exit":0}}}}`)
+	if p.tool == nil || p.tool.Name != "bash" || !p.tool.Ok {
+		t.Errorf("tool_use misparsed: %+v", p.tool)
+	}
+	if p.tool != nil && !strings.Contains(p.tool.Preview, "DONE") {
+		t.Errorf("preview wrong: %q", p.tool.Preview)
+	}
+	// Failed exit marks not-ok.
+	q := parseRunEvent(`{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","output":"boom","metadata":{"exit":3}}}}`)
+	if q.tool == nil || q.tool.Ok {
+		t.Errorf("failed tool must be not-ok: %+v", q.tool)
+	}
+	// Non-completed states stay silent (no orphan spinners).
+	r := parseRunEvent(`{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"running"}}}`)
+	if r.tool != nil {
+		t.Errorf("running tool_use must stay silent: %+v", r.tool)
+	}
+}
 
 const verboseSample = `opencode/big-pickle
 {

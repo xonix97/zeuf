@@ -26,8 +26,14 @@ const maxOutputBytes = 32 * 1024
 type Approver func(action, detail string) bool
 
 // Policy controls which operations need explicit approval.
+//
+// The standing rule is action-first: ordinary development work — reading,
+// creating and editing files inside the workdir, running builds, tests,
+// and inspections — proceeds without prompting. Only clearly destructive
+// or out-of-scope operations consult the Approver (TUI modal / terminal
+// prompt). AutoApprove allows everything, including destructive actions,
+// without prompting.
 type Policy struct {
-	// AutoApprove allows non-destructive writes/edits/safe commands without prompting.
 	AutoApprove bool
 	Approver    Approver
 }
@@ -159,7 +165,7 @@ func (r *Registry) outsideWorkdir(path string) bool {
 	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-var destructiveCmd = regexp.MustCompile(`(?i)(rm\s+-rf?\s+/(?:\s|$)|mkfs|dd\s+[^|]*of=\s*/dev/|:\(\)\s*\{|shutdown|halt|reboot|git\s+clean\s+-fdx?\b)`)
+var destructiveCmd = regexp.MustCompile(`(?i)(rm\s+-rf?\s+/(?:\s|$)|mkfs|dd\s+[^|]*of=\s*/dev/|:\(\)\s*\{|shutdown|halt|reboot|git\s+clean\s+-fdx?\b|\|\s*(ba)?sh\b)`)
 
 func (r *Registry) registerDefaults() {
 	r.tools["read"] = Tool{
@@ -200,7 +206,7 @@ func (r *Registry) registerDefaults() {
 	}
 	r.tools["write"] = Tool{
 		Name:        "write",
-		Description: "Create or overwrite a file. Requires approval unless auto-approved.",
+		Description: "Create or overwrite a file inside the workdir. Proceeds directly; asks only outside the workdir.",
 		Parameters:  `{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`,
 		Run: func(ctx context.Context, argsJSON string) (Result, error) {
 			var a struct {
@@ -211,7 +217,7 @@ func (r *Registry) registerDefaults() {
 				return fail("bad arguments: %v", err)
 			}
 			abs := r.resolve(a.Path)
-			if r.outsideWorkdir(a.Path) || !r.Policy.AutoApprove {
+			if r.outsideWorkdir(a.Path) {
 				if !r.approve("write file", abs) {
 					return fail("write %s denied by approval policy", abs)
 				}
@@ -227,7 +233,7 @@ func (r *Registry) registerDefaults() {
 	}
 	r.tools["edit"] = Tool{
 		Name:        "edit",
-		Description: "Replace the first occurrence of old_string with new_string in a file. Requires approval unless auto-approved.",
+		Description: "Replace the first occurrence of old_string with new_string in a file inside the workdir. Proceeds directly; asks only outside the workdir.",
 		Parameters:  `{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}`,
 		Run: func(ctx context.Context, argsJSON string) (Result, error) {
 			var a struct {
@@ -239,7 +245,7 @@ func (r *Registry) registerDefaults() {
 				return fail("bad arguments: %v", err)
 			}
 			abs := r.resolve(a.Path)
-			if !r.Policy.AutoApprove {
+			if r.outsideWorkdir(a.Path) {
 				if !r.approve("edit file", abs) {
 					return fail("edit %s denied by approval policy", abs)
 				}
@@ -255,12 +261,13 @@ func (r *Registry) registerDefaults() {
 			if err := os.WriteFile(abs, []byte(updated), 0o644); err != nil {
 				return fail("write %s: %v", a.Path, err)
 			}
-			return ok(fmt.Sprintf("edited %s", abs))
+			added, removed := countLines(a.New), countLines(a.Old)
+			return ok(fmt.Sprintf("edited %s (+%d -%d)", abs, added, removed))
 		},
 	}
 	r.tools["bash"] = Tool{
 		Name:        "bash",
-		Description: "Run a shell command in the workdir. Destructive commands always need approval.",
+		Description: "Run a shell command in the workdir (builds, tests, inspection proceed directly). Destructive commands always need approval.",
 		Parameters:  `{"type":"object","properties":{"command":{"type":"string"},"timeout_ms":{"type":"integer"}},"required":["command"]}`,
 		Run: func(ctx context.Context, argsJSON string) (Result, error) {
 			var a struct {
@@ -275,10 +282,6 @@ func (r *Registry) registerDefaults() {
 			}
 			if destructiveCmd.MatchString(a.Command) {
 				if !r.approve("run destructive command", a.Command) {
-					return fail("command denied by approval policy: %s", a.Command)
-				}
-			} else if !r.Policy.AutoApprove {
-				if !r.approve("run command", a.Command) {
 					return fail("command denied by approval policy: %s", a.Command)
 				}
 			}
@@ -474,6 +477,38 @@ func (r *Registry) registerDefaults() {
 			return ok(b.String())
 		},
 	}
+}
+
+// countLines counts newline-terminated lines (diffstat style).
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}
+
+// GitInfo reports the current branch and whether the workdir tree is
+// dirty. Empty branch means "not a git repo" (or git unavailable).
+func (r *Registry) GitInfo() (branch, dirty string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	branchOut, err := exec.CommandContext(ctx, "git", "-C", r.Workdir, "branch", "--show-current").Output()
+	if err != nil {
+		return "", ""
+	}
+	branch = strings.TrimSpace(string(branchOut))
+	statusOut, err := exec.CommandContext(ctx, "git", "-C", r.Workdir, "status", "--porcelain").Output()
+	if err != nil {
+		return branch, ""
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		dirty = "*"
+	}
+	return branch, dirty
 }
 
 // PlanSteps returns the current plan (for syncing into the session).

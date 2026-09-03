@@ -48,10 +48,22 @@ type PickerModel struct {
 
 // Event is a core-to-UI update.
 type Event struct {
-	Kind string // "token","text","tool","switch","status","plan","error","done","picker"
+	Kind string // "token","reasoning","text","tool-start","tool-end","switch","status","plan","session","task","usage","error","done","picker"
 	Text string
 	// Approval carries a blocking permission request (answer via Resp).
 	Approval *agent.ApprovalReq
 	// Models carries picker rows for Kind=="picker".
 	Models []PickerModel
+	// Tool carries the tool name for Kind=="tool-start"/"tool-end".
+	Tool string
+	// Args carries raw JSON arguments for Kind=="tool-start".
+	Args string
+	// Ok reports tool success for Kind=="tool-end".
+	Ok bool
+	// Depth marks subagent-nested content (0 = orchestrator itself).
+	Depth int
+	// Detail carries extra lines: result preview for "tool-end",
+	// "1:title"/"0:title" plan lines for "plan",
+	// "workdir|branch|dirty" for "session".
+	Detail string
 }

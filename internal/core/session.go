@@ -17,6 +17,8 @@ type Session struct {
 	Plan           []PlanStep        `json:"plan"`
 	FilesInspected []string          `json:"files_inspected"`
 	PendingTools   []ToolCall        `json:"pending_tools,omitempty"`
+	TokensIn       int64             `json:"tokens_in"`
+	TokensOut      int64             `json:"tokens_out"`
 	SwitchTrail    []string          `json:"switch_trail"` // model FullIDs used, in order
 	Meta           map[string]string `json:"meta,omitempty"`
 	Created        time.Time         `json:"created"`
@@ -64,6 +66,13 @@ func (s *Session) AppendTool(callID, name, content string, isError bool) {
 		Role: RoleTool, Content: content, Name: name, ToolCallID: callID,
 	})
 	_ = isError
+	s.touch()
+}
+
+// AddUsage accumulates per-turn token accounting into session totals.
+func (s *Session) AddUsage(u Usage) {
+	s.TokensIn += u.Input
+	s.TokensOut += u.Output
 	s.touch()
 }
 

@@ -42,7 +42,7 @@ func interactive(ctx context.Context, useTUI bool) error {
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
-			if handleSlash(line, &prefs, reg, sess) {
+			if handleSlash(line, &prefs, reg, sess, ag) {
 				return nil
 			}
 			continue
@@ -57,7 +57,7 @@ func interactive(ctx context.Context, useTUI bool) error {
 	}
 }
 
-func handleSlash(line string, prefs *router.Prefs, reg *router.Registry, sess *agent.Session2) (quit bool) {
+func handleSlash(line string, prefs *router.Prefs, reg *router.Registry, sess *agent.Session2, ag *agent.Agent) (quit bool) {
 	parts := strings.Fields(line)
 	switch parts[0] {
 	case "/quit", "/exit", "/q":
@@ -69,6 +69,7 @@ func handleSlash(line string, prefs *router.Prefs, reg *router.Registry, sess *a
 /router nofallback | /router fallback — toggle automatic fallback
 /models [all]                        — pick the active model
 /connect                             — attach a new model backend
+/agents                              — list subagents this session
 /providers                           — list backends
 /session                             — show session summary
 /quit                                — exit`)
@@ -118,6 +119,8 @@ func handleSlash(line string, prefs *router.Prefs, reg *router.Registry, sess *a
 		for _, n := range reg.Backends() {
 			fmt.Println("-", n)
 		}
+	case "/agents":
+		fmt.Println(formatAgents(ag.SnapshotSubs()))
 	case "/session":
 		fmt.Println(sess.Summary())
 	default:

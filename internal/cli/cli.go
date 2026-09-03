@@ -11,15 +11,18 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"zeuf/internal/agent"
 	"zeuf/internal/config"
 	"zeuf/internal/core"
 	ct "zeuf/internal/core/tools"
 	"zeuf/internal/providers/direct"
+	"zeuf/internal/providers/gemini"
 	"zeuf/internal/providers/kilo"
 	"zeuf/internal/providers/opencode"
 	"zeuf/internal/router"
+	"zeuf/internal/tui"
 )
 
 var (
@@ -34,30 +37,35 @@ func Execute() error { return rootCmd().Execute() }
 
 func rootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "zeuf",
-		Short: "Zeuf — your own coding agent with many model sources",
+		Use:     "zeuf",
+		Version: tui.Version,
+		Short:   "Zeuf — your own coding agent with many model sources",
 		Long: `Zeuf is your own coding agent. It routes tasks across the model
 backends you already have (OpenCode, Kilo Code, direct providers),
 preserves the session across automatic fallbacks, and executes code
-tasks with tools, approvals and streaming.`,
+tasks with tools, approvals and streaming.
+
+Run bare 'zeuf' in a terminal for the full-screen TUI;
+use --plain for line-based output, or a subcommand for one-shot use.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return interactive(cmd.Context(), tuiWanted())
+			forceTUI, _ := cmd.Flags().GetBool("tui")
+			forcePlain, _ := cmd.Flags().GetBool("plain")
+			return interactive(cmd.Context(), forceTUI || (!forcePlain && hasTerminal()))
 		},
 	}
 	root.PersistentFlags().BoolVar(&flagAuto, "auto", false, "auto-approve non-destructive tool actions")
 	root.PersistentFlags().StringVar(&flagDir, "dir", "", "working directory (default: current)")
+	root.PersistentFlags().Bool("tui", false, "force the full-screen TUI (default when interactive)")
+	root.PersistentFlags().Bool("plain", false, "force plain CLI output instead of the TUI")
 
 	root.AddCommand(initCmd(), runCmd(), modelsCmd(), providersCmd(), configCmd(), doctorCmd(), tuiCmd(), connectCmd())
 	return root
 }
 
-func tuiWanted() bool {
-	for _, a := range os.Args[1:] {
-		if a == "--tui" || a == "-t" {
-			return true
-		}
-	}
-	return false
+// hasTerminal reports whether we're attached to a real terminal that can
+// host the full-screen TUI. Piped/scripted use falls back to plain output.
+func hasTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // session bootstraps config, registry, router, tools and agent.
@@ -81,6 +89,7 @@ func session(ctx context.Context, workdir string) (config.Config, *router.Regist
 	reg := router.NewRegistry()
 	reg.Register(opencode.New(opencode.Config{ServeURL: cfg.OpencodeServe, Workdir: workdir}))
 	reg.Register(kilo.New(kilo.Config{ServeURL: cfg.KiloServe, Workdir: workdir}))
+	reg.Register(gemini.New(gemini.Config{Workdir: workdir}))
 	for _, d := range cfg.Direct {
 		reg.Register(direct.New(direct.Config{Name: d.Name, BaseURL: d.BaseURL, APIKeyEnv: d.APIKeyEnv}))
 	}
@@ -141,12 +150,18 @@ func runCmd() *cobra.Command {
 			refreshNow(ctx, reg)
 			sess := agent.NewSession(newID(), task, tools)
 			sess.AppendUser(task)
-			wireOutput(ag, r)
+			state := wireOutput(ag, r)
 			out, err := ag.RunTurn(ctx, sess, prefs)
 			if err != nil {
 				return err
 			}
-			fmt.Println(out)
+			// The final text already went to a TTY stderr via the stream or
+			// the assistant echo; print it only when the user hasn't seen it
+			// (piped use stays scriptable).
+			streamed, echoed := state()
+			if !term.IsTerminal(int(os.Stdout.Fd())) || (!streamed && !echoed) {
+				fmt.Println(out)
+			}
 			return nil
 		},
 	}
@@ -349,9 +364,9 @@ func doctorCmd() *cobra.Command {
 			ctx := cmd.Context()
 			fmt.Println("Zeuf doctor")
 			fmt.Println("config:", config.Path())
-			for _, bin := range []string{"opencode", "kilo"} {
+			for _, bin := range []string{"opencode", "kilo", "gemini"} {
 				if p, err := lookPath(bin); err != nil {
-					fmt.Printf("○ %-10s not found in PATH\n", bin)
+					fmt.Printf("○ %-10s not found in PATH (install.sh installs it)\n", bin)
 				} else {
 					fmt.Printf("● %-10s %s\n", bin, p)
 				}
@@ -383,20 +398,26 @@ func lookPath(bin string) (string, error) {
 
 // ---- output wiring -------------------------------------------------------------
 
-func wireOutput(ag *agent.Agent, r *router.Router) {
+func wireOutput(ag *agent.Agent, r *router.Router) func() (streamed, echoed bool) {
 	r.OnSwitch = func(s router.SwitchInfo) {
 		fmt.Fprintf(os.Stderr, "\nModel limit reached. Continuing with %s.\n\n", s.To)
 	}
+	var streamed, echoed bool
 	ag.Emit = func(ev agent.Event) {
 		switch ev.Type {
 		case agent.EvToken:
+			streamed = true
 			fmt.Fprint(os.Stderr, ev.Text)
 		case agent.EvToolStart:
+			streamed = false // a new model turn begins
 			fmt.Fprintf(os.Stderr, "\n✓ %s…\n", ev.Tool)
 		case agent.EvToolEnd:
 			// tool results stream into context; keep the console quiet
 		case agent.EvAssistant:
-			if ev.Text != "" {
+			// Skip the full-text echo when tokens already streamed it;
+			// otherwise (non-streaming backends) this is the only copy.
+			if ev.Text != "" && !streamed {
+				echoed = true
 				fmt.Fprintf(os.Stderr, "\n%s\n", ev.Text)
 			}
 		case agent.EvSwitch:
@@ -405,6 +426,7 @@ func wireOutput(ag *agent.Agent, r *router.Router) {
 			}
 		}
 	}
+	return func() (bool, bool) { return streamed, echoed }
 }
 
 func newID() string { return fmt.Sprintf("zeuf-%d", time.Now().UnixNano()) }

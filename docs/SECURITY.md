@@ -11,10 +11,13 @@
   `doctor` reports only key *presence* (`set`/`missing`), never values.
 - **Models never see credentials.** Keys live only in the HTTP layer of
   the direct adapter and are never placed in prompts or tool results.
-- **Approvals.** Writes/edits/mutating git ops need approval unless
-  `--auto`; destructive shell patterns (`rm -rf /`, `mkfs`, `dd … of=/dev/`,
-  fork bombs, `git clean -fdx`) always need explicit approval, even with
-  `--auto`. Nothing destructive runs silently.
+- **Approvals.** Ordinary development work — reads, in-workdir writes/edits,
+  builds, tests, inspections — proceeds without prompting. Approval is
+  required for out-of-workdir writes, mutating git ops, and destructive
+  shell patterns (`rm -rf /`, `mkfs`, `dd … of=/dev/`, fork bombs,
+  `git clean -fdx`, piped-to-shell), which always need explicit approval,
+  even with `--auto` (which otherwise allows everything). Nothing
+  destructive runs silently.
 - **No provider circumvention.** Quotas and rate limits are respected as
   observed signals: classified failures cause cooldowns and fallback, not
   retries against the same exhausted model.

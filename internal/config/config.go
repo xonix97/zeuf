@@ -33,7 +33,7 @@ type Config struct {
 // Default returns the default configuration.
 func Default() Config {
 	return Config{
-		BackendsOrder: []string{"opencode", "kilo", "direct"},
+		BackendsOrder: []string{"opencode", "kilo", "gemini", "direct"},
 		Prefs:         router.DefaultPrefs(),
 	}
 }

@@ -32,6 +32,15 @@ func TestSessionPreservesStateAcrossSwitch(t *testing.T) {
 	}
 }
 
+func TestAddUsage(t *testing.T) {
+	s := NewSession("s", "t", "")
+	s.AddUsage(Usage{Input: 100, Output: 20})
+	s.AddUsage(Usage{Input: 50, Output: 5, Reasoning: 9})
+	if s.TokensIn != 150 || s.TokensOut != 25 {
+		t.Errorf("totals = %d/%d", s.TokensIn, s.TokensOut)
+	}
+}
+
 func TestSnapshotDeepCopy(t *testing.T) {
 	s := NewSession("s", "t", "")
 	s.AppendUser("hi")

@@ -14,6 +14,35 @@ func testEnv(t *testing.T) {
 	t.Setenv("ZEUF_AUTH_FILE", filepath.Join(dir, "auth.json"))
 }
 
+func TestPresetsSane(t *testing.T) {
+	seen := map[string]bool{}
+	foundGemini := false
+	for _, p := range Presets {
+		if p.ID == "" || seen[p.ID] {
+			t.Errorf("bad/duplicate preset id %q", p.ID)
+		}
+		seen[p.ID] = true
+		if !(strings.HasPrefix(p.BaseURL, "http://") || strings.HasPrefix(p.BaseURL, "https://")) {
+			// custom has empty base by design
+			if p.ID != "custom" {
+				t.Errorf("preset %s bad base %q", p.ID, p.BaseURL)
+			}
+		}
+		if p.ID == "gemini" {
+			foundGemini = true
+			if !strings.Contains(p.BaseURL, "v1beta/openai") || p.KeyEnv != "GEMINI_API_KEY" {
+				t.Errorf("gemini preset wrong: %+v", p)
+			}
+		}
+	}
+	if !foundGemini {
+		t.Error("gemini BYOK preset missing")
+	}
+	if len(Presets) < 7 {
+		t.Errorf("expected presets incl. gemini, got %d", len(Presets))
+	}
+}
+
 func TestValidate(t *testing.T) {
 	if err := Validate(ConnectSpec{Name: "or", BaseURL: "https://x/v1"}); err != nil {
 		t.Error(err)

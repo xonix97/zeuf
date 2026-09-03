@@ -106,7 +106,11 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 		if s.Resp != nil && len(s.Resp.ToolCalls) > 0 {
 			ch <- core.StreamEvent{Type: core.EventTool, ToolCalls: s.Resp.ToolCalls}
 		}
-		ch <- core.StreamEvent{Type: core.EventDone}
+		var usage core.Usage
+		if s.Resp != nil {
+			usage = s.Resp.Usage
+		}
+		ch <- core.StreamEvent{Type: core.EventDone, Usage: usage}
 	}()
 	return ch, nil
 }

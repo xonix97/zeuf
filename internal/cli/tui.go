@@ -11,6 +11,7 @@ import (
 	"zeuf/internal/agent"
 	"zeuf/internal/config"
 	"zeuf/internal/core"
+	ctools "zeuf/internal/core/tools"
 	"zeuf/internal/providers/direct"
 	"zeuf/internal/router"
 	"zeuf/internal/tui"
@@ -70,14 +71,19 @@ func runTUI(ctx context.Context) error {
 	ag.Emit = func(ev agent.Event) {
 		switch ev.Type {
 		case agent.EvToken:
-			events <- tui.Event{Kind: "token", Text: ev.Text}
+			events <- tui.Event{Kind: "token", Text: ev.Text, Depth: ev.Depth}
+		case agent.EvReasoning:
+			events <- tui.Event{Kind: "reasoning", Text: ev.Text, Depth: ev.Depth}
+		case agent.EvUsage:
+			events <- usageEvent(reg, sess, ev.Model)
 		case agent.EvToolStart:
-			events <- tui.Event{Kind: "tool", Text: ev.Tool + " started"}
+			events <- tui.Event{Kind: "tool-start", Tool: ev.Tool, Args: ev.Text, Depth: ev.Depth}
 		case agent.EvToolEnd:
-			events <- tui.Event{Kind: "tool", Text: ev.Tool + " done"}
-			events <- tui.Event{Kind: "plan", Text: planCounts(sess)}
+			events <- tui.Event{Kind: "tool-end", Tool: ev.Tool, Text: toolPreview(ev.Text), Ok: ev.Ok, Depth: ev.Depth}
+			events <- tui.Event{Kind: "plan", Text: planCounts(sess), Detail: planDetail(sess)}
+			events <- tui.Event{Kind: "session", Detail: sessionDetail(tools)}
 		case agent.EvAssistant:
-			events <- tui.Event{Kind: "text", Text: ev.Text}
+			events <- tui.Event{Kind: "text", Text: ev.Text, Depth: ev.Depth}
 		case agent.EvError:
 			events <- tui.Event{Kind: "error", Text: core.Redact(ev.Text)}
 		case agent.EvDone:
@@ -89,7 +95,8 @@ func runTUI(ctx context.Context) error {
 	// the registry are never touched concurrently.
 	go func() {
 		events <- tui.Event{Kind: "status", Text: statusFor(reg, "")}
-		events <- tui.Event{Kind: "text", Text: fmt.Sprintf("Zeuf ready — %d free models across %d backends. Type a task, /quit to exit.", len(router.FreeOnly(reg.Models())), len(reg.Backends()))}
+		events <- tui.Event{Kind: "session", Detail: sessionDetail(tools)}
+		events <- tui.Event{Kind: "system", Text: fmt.Sprintf("Zeuf ready — %d free models across %d backends. Type a task, /quit to exit.", len(router.FreeOnly(reg.Models())), len(reg.Backends()))}
 		for {
 			select {
 			case <-ctx.Done():
@@ -137,6 +144,9 @@ func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *r
 	case line == "/providers":
 		events <- tui.Event{Kind: "text", Text: "Backends: " + strings.Join(reg.Backends(), ", ")}
 		return false
+	case line == "/agents":
+		events <- tui.Event{Kind: "text", Text: formatAgents(ag.SnapshotSubs())}
+		return false
 	case line == "/session":
 		events <- tui.Event{Kind: "text", Text: sess.Summary()}
 		return false
@@ -151,6 +161,7 @@ func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *r
 	}
 	sess.Session.Task = line
 	sess.AppendUser(line)
+	events <- tui.Event{Kind: "task", Text: line}
 	if _, err := ag.RunTurn(ctx, sess, *prefs); err != nil {
 		events <- tui.Event{Kind: "error", Text: core.Redact(err.Error())}
 	}
@@ -184,6 +195,78 @@ func handleTUIAction(ctx context.Context, act tui.Action, prefs *router.Prefs, r
 		refreshNow(ctx, reg)
 		events <- tui.Event{Kind: "status", Text: statusFor(reg, "")}
 		events <- tui.Event{Kind: "text", Text: fmt.Sprintf("Rescanned %s: %d free models available.", a.Backend, len(router.FreeOnly(reg.Models())))}
+	}
+}
+
+// formatAgents renders subagent records for /agents. Empty means the
+// orchestrator did everything itself this session.
+func formatAgents(subs []agent.SubInfo) string {
+	if len(subs) == 0 {
+		return "No subagents yet — the orchestrator handled everything itself."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Subagents (%d):\n", len(subs))
+	for i, s := range subs {
+		mark := "✓"
+		if !s.Ok {
+			mark = "✗"
+		}
+		fmt.Fprintf(&b, "%d. %s [%s · %s] %s\n   └ %s\n",
+			i+1, mark, fmtDurAgent(s.Ms), nonEmptyStr(s.Model, "unknown model"),
+			truncAgent(s.Task, 80), truncAgent(s.Summary, 160))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func fmtDurAgent(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
+}
+
+func truncAgent(s string, n int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// usageEvent builds the context meter from session totals and the
+// current model's window. Unknown windows or zero totals show honestly.
+func usageEvent(reg *router.Registry, sess *agent.Session2, model string) tui.Event {
+	used := sess.Session.TokensIn + sess.Session.TokensOut
+	ctxLen := 0
+	for _, e := range reg.Models() {
+		if e.Model.FullID() == model || e.Model.ID == model {
+			ctxLen = e.Model.Caps.ContextLength
+			break
+		}
+	}
+	if used <= 0 || ctxLen <= 0 {
+		if used > 0 {
+			return tui.Event{Kind: "usage", Text: fmtK(used) + "/?", Detail: ""}
+		}
+		return tui.Event{Kind: "usage", Text: "", Detail: ""}
+	}
+	pct := used * 100 / int64(ctxLen)
+	return tui.Event{Kind: "usage", Text: fmtK(used) + "/" + fmtK(int64(ctxLen)), Detail: fmt.Sprintf("%d%%", pct)}
+}
+
+// fmtK condenses token counts: 999, 12.4k, 3.4M.
+func fmtK(n int64) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 1_000_000:
+		if n%1000 == 0 {
+			return fmt.Sprintf("%dk", n/1000)
+		}
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 	}
 }
 
@@ -230,6 +313,43 @@ func planCounts(sess *agent.Session2) string {
 	return fmt.Sprintf("%d/%d", done, total)
 }
 
+// planDetail renders plan steps as "1:title"/"0:title" lines for the TUI
+// checklist. Empty when the agent has no plan yet.
+func planDetail(sess *agent.Session2) string {
+	var b strings.Builder
+	for _, p := range sess.Session.Plan {
+		mark := "0"
+		if p.Done {
+			mark = "1"
+		}
+		title := strings.ReplaceAll(strings.TrimSpace(p.Title), "\n", " ")
+		fmt.Fprintf(&b, "%s:%s\n", mark, title)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// toolPreview condenses a tool result to one UI line (first meaningful
+// line, bounded). Full output stays in session context, not on screen.
+func toolPreview(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len([]rune(line)) > 140 {
+			line = string([]rune(line)[:140]) + "…"
+		}
+		return line
+	}
+	return ""
+}
+
+// sessionDetail renders "workdir|branch|dirty" for the TUI header.
+func sessionDetail(reg *ctools.Registry) string {
+	branch, dirty := reg.GitInfo()
+	return reg.Workdir + "|" + branch + "|" + dirty
+}
+
 // registerDirect adds a saved direct endpoint to the live registry.
 func registerDirect(reg *router.Registry, name string) {
 	cfg, err := config.Load()
@@ -244,11 +364,11 @@ func registerDirect(reg *router.Registry, name string) {
 	}
 }
 
-// statusFor renders "model|provider|state" for the TUI status bar.
+// statusFor renders "model|provider|state|display" for the TUI chrome.
 func statusFor(reg *router.Registry, override string) string {
 	models := reg.Models()
 	if len(models) == 0 {
-		return "—|—|Offline"
+		return "—|—|Offline|—"
 	}
 	m := models[0]
 	if override != "" {
@@ -267,5 +387,12 @@ func statusFor(reg *router.Registry, override string) string {
 	if len(short) > 28 {
 		short = short[:28] + "…"
 	}
-	return short + "|" + m.Backend.Name() + "|" + state
+	display := m.Model.DisplayName
+	if display == "" {
+		display = m.Model.ID
+	}
+	if len([]rune(display)) > 26 {
+		display = string([]rune(display)[:26]) + "…"
+	}
+	return short + "|" + m.Backend.Name() + "|" + state + "|" + display
 }

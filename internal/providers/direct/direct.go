@@ -13,7 +13,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -75,15 +77,52 @@ func (a *Adapter) key() (string, error) {
 	return "", &core.ProviderError{Code: core.ErrAuth, Provider: a.Name(), Message: fmt.Sprintf("no API key: %s is not set and no stored credential exists", want)}
 }
 
+// keyless reports whether the endpoint declares no credential at all
+// (empty APIKeyEnv and nothing in the auth store), as with local servers
+// like Ollama. Callers then omit the Authorization header instead of
+// failing: a server that still wants a key answers 401, honestly mapped.
+func (a *Adapter) keyless() bool {
+	if strings.TrimSpace(a.cfg.APIKeyEnv) != "" {
+		return false
+	}
+	store, _ := auth.Open()
+	if store != nil {
+		if k, err := store.Get(auth.ServiceDirect, a.cfg.Name); err == nil && strings.TrimSpace(k) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// isLoopbackURL reports loopback bases (localhost, 127/8, ::1): traffic
+// never leaves the machine, so nothing can be metered — models there are
+// affirmatively free, not "unknown".
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || host == "::1" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // ListModels implements providers.Adapter via GET /models (best effort:
 // the chat API always works even if listing is unsupported).
 func (a *Adapter) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 	key, err := a.key()
-	if err != nil {
+	if err != nil && !a.keyless() {
 		return nil, err
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(a.cfg.BaseURL, "/")+"/models", nil)
-	req.Header.Set("Authorization", "Bearer "+key)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return nil, &core.ProviderError{Code: core.ErrNetwork, Provider: a.Name(), Message: err.Error()}
@@ -102,6 +141,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 		return nil, &core.ProviderError{Code: core.ErrUnknown, Provider: a.Name(), Message: "decode models: " + err.Error()}
 	}
 	out := make([]core.ModelInfo, 0, len(v.Data))
+	free := isLoopbackURL(a.cfg.BaseURL)
 	for _, m := range v.Data {
 		out = append(out, core.ModelInfo{
 			ID: m.ID, Provider: a.Name(), DisplayName: m.ID,
@@ -109,6 +149,8 @@ func (a *Adapter) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 			Scores:       core.UnknownScores(),
 			Availability: core.AvailAvailable,
 			QuotaState:   "unknown",
+			IsFree:       free,
+			CostKnown:    free,
 		})
 	}
 	return out, nil
@@ -177,12 +219,14 @@ func (a *Adapter) chatBody(req core.ChatRequest, stream bool) map[string]any {
 
 func (a *Adapter) doPost(ctx context.Context, body map[string]any) (*http.Response, []byte, error) {
 	key, err := a.key()
-	if err != nil {
+	if err != nil && !a.keyless() {
 		return nil, nil, err
 	}
 	raw, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(a.cfg.BaseURL, "/")+"/chat/completions", bytes.NewReader(raw))
-	req.Header.Set("Authorization", "Bearer "+key)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -245,6 +289,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
+		var usage core.Usage
 		sc := bufio.NewScanner(resp.Body)
 		sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for sc.Scan() {
@@ -257,22 +302,34 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 			}
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				ch <- core.StreamEvent{Type: core.EventDone}
+				ch <- core.StreamEvent{Type: core.EventDone, Usage: usage}
 				return
 			}
 			var v struct {
 				Choices []struct {
 					Delta struct {
-						Content   string       `json:"content"`
-						ToolCalls []oaToolCall `json:"tool_calls"`
+						Content          string       `json:"content"`
+						ReasoningContent string       `json:"reasoning_content"`
+						ToolCalls        []oaToolCall `json:"tool_calls"`
 					} `json:"delta"`
 					FinishReason string `json:"finish_reason"`
 				} `json:"choices"`
+				Usage *struct {
+					PromptTokens     int64 `json:"prompt_tokens"`
+					CompletionTokens int64 `json:"completion_tokens"`
+				} `json:"usage"`
 			}
 			if err := json.Unmarshal([]byte(data), &v); err != nil {
 				continue
 			}
+			if v.Usage != nil {
+				usage.Input += v.Usage.PromptTokens
+				usage.Output += v.Usage.CompletionTokens
+			}
 			for _, c := range v.Choices {
+				if c.Delta.ReasoningContent != "" {
+					ch <- core.StreamEvent{Type: core.EventReasoning, Delta: c.Delta.ReasoningContent}
+				}
 				if c.Delta.Content != "" {
 					ch <- core.StreamEvent{Type: core.EventToken, Delta: c.Delta.Content}
 				}
@@ -280,7 +337,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 					ch <- core.StreamEvent{Type: core.EventTool, ToolCalls: []core.ToolCall{{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments}}}
 				}
 				if c.FinishReason != "" {
-					ch <- core.StreamEvent{Type: core.EventDone}
+					ch <- core.StreamEvent{Type: core.EventDone, Usage: usage}
 					return
 				}
 			}
@@ -292,7 +349,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 			}
 			return
 		}
-		ch <- core.StreamEvent{Type: core.EventDone}
+		ch <- core.StreamEvent{Type: core.EventDone, Usage: usage}
 	}()
 	return ch, nil
 }

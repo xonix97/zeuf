@@ -32,6 +32,42 @@ func harness(t *testing.T, backends ...*mock.Adapter) (*Agent, *router.Router, *
 	return New(r, tools), r, tools
 }
 
+// TestActsWithoutFriction is the action-first contract at loop level: a
+// turn that reads, writes, edits, and builds must complete with an
+// approver that denies everything — ordinary work never prompts.
+func TestActsWithoutFriction(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	m := mock.New("m", []core.ModelInfo{mock.Model("m", "doer", 0.9, 200000, true)}, []mock.Script{
+		{Resp: &core.ChatResponse{Content: "doing", ToolCalls: []core.ToolCall{
+			{ID: "c1", Name: "write", Arguments: `{"path":"app.txt","content":"v1"}`},
+			{ID: "c2", Name: "bash", Arguments: `{"command":"echo build-ok"}`},
+		}}},
+		{Resp: &core.ChatResponse{Content: "editing", ToolCalls: []core.ToolCall{
+			{ID: "c3", Name: "edit", Arguments: `{"path":"app.txt","old_string":"v1","new_string":"v2"}`},
+		}}},
+		{Resp: &core.ChatResponse{Content: "implemented app.txt and verified the build"}},
+	})
+	ag, _, _ := harness(t, m)
+	ag.Tools = ct.NewRegistry(dir, ct.Policy{Approver: func(action, detail string) bool {
+		t.Errorf("ordinary work must not prompt (asked %q: %s)", action, detail)
+		return false
+	}})
+	sess := NewSession("s-act", "implement the thing", ag.Tools)
+	sess.AppendUser("implement the thing")
+	out, err := ag.RunTurn(ctx, sess, router.DefaultPrefs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "implemented app.txt and verified the build" {
+		t.Errorf("final = %q", out)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "app.txt"))
+	if string(data) != "v2" {
+		t.Errorf("workspace state = %q, want v2", data)
+	}
+}
+
 // TestNativeToolLoop: the model asks to read a file, Zeuf executes it with
 // structured results, the model answers. Milestone: real tool calls.
 func TestNativeToolLoop(t *testing.T) {
@@ -177,6 +213,61 @@ func TestAgentStreamsTokens(t *testing.T) {
 	}
 	if !strings.Contains(tokens.String(), "streamed") {
 		t.Errorf("no tokens streamed: %q", tokens.String())
+	}
+}
+
+func TestConsumeReasoningAndUsage(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New("m", []core.ModelInfo{mock.Model("m", "s", 0.5, 0, false)}, nil)
+	ag, _, tools := harness(t, m)
+	var got []Event
+	ag.Emit = func(ev Event) { got = append(got, ev) }
+	ch := make(chan core.StreamEvent, 4)
+	ch <- core.StreamEvent{Type: core.EventReasoning, Delta: "hmm"}
+	ch <- core.StreamEvent{Type: core.EventToken, Delta: "hi"}
+	ch <- core.StreamEvent{Type: core.EventDone, Usage: core.Usage{Input: 10, Output: 5}}
+	close(ch)
+	sess := NewSession("s-r", "hi", tools)
+	resp, err := ag.consume(ctx, ch, sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.Input != 10 || resp.Usage.Output != 5 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+	found := false
+	for _, ev := range got {
+		if ev.Type == EvReasoning && ev.Text == "hmm" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("reasoning not forwarded: %+v", got)
+	}
+}
+
+func TestUsageTotalsAndEvent(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New("m", []core.ModelInfo{mock.Model("m", "s", 0.5, 0, false)}, []mock.Script{
+		{Resp: &core.ChatResponse{Content: "done", Usage: core.Usage{Input: 100, Output: 20}}},
+	})
+	ag, _, tools := harness(t, m)
+	var usage []Event
+	ag.Emit = func(ev Event) {
+		if ev.Type == EvUsage {
+			usage = append(usage, ev)
+		}
+	}
+	sess := NewSession("s-u", "hi", tools)
+	sess.AppendUser("hi")
+	if _, err := ag.RunTurn(ctx, sess, router.DefaultPrefs()); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Session.TokensIn != 100 || sess.Session.TokensOut != 20 {
+		t.Errorf("totals = %d/%d", sess.Session.TokensIn, sess.Session.TokensOut)
+	}
+	if len(usage) != 1 || usage[0].Usage.Input != 100 {
+		t.Errorf("usage events = %+v", usage)
 	}
 }
 

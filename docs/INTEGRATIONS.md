@@ -20,11 +20,22 @@ returned streamed text events; `models --verbose` returned per-model
 JSON with `limit.context` and `capabilities.toolcall`; unknown models
 yield `{"type":"error",…}` events.
 
+Gemini CLI (0.58.0, verified live): no model enumeration, so Zeuf ships
+the documented IDs (2.5 pro/flash with public 1M windows; 3 previews as
+context-unknown rather than guessed). Headless turns use the documented
+envelopes — `-o json` (`{response, stats, error?}`) and `-o stream-json`
+(JSONL `init`/`message`/`tool_use`/`tool_result`/`error`/`result`) —
+with `--thinking` for reasoning parts and step-finish token accounting
+folded into usage. Verified: unauthenticated runs return error code 41
+(mapped to auth failure); `reasoning` parts, `tool_use` completions and
+per-step `tokens` all parse. Auth = your `gemini` login or
+`GEMINI_API_KEY` (presence only — Zeuf never reads credential files).
+
 ## Consequences for the design
 
 - **Direct providers** (`direct/*`): Zeuf owns the complete loop —
   OpenAI-compatible chat + tools + SSE streaming over HTTPS.
-- **Gateway backends** (`opencode`, `kilo`): Zeuf delegates each turn to
+- **Gateway backends** (`opencode`, `kilo`, `gemini`): Zeuf delegates each turn to
   the user's own CLI/server (the integration these tools explicitly
   support) and keeps everything else: agent state, transcript
   reconstruction, routing, fallback, approvals policy, UI. The full

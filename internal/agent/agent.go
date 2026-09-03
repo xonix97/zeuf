@@ -17,22 +17,19 @@ import (
 	"zeuf/internal/router"
 )
 
-// SystemPrompt is Zeuf's default instruction set for native backends.
-const SystemPrompt = `You are Zeuf, a coding agent running inside the user's own terminal.
-You are an orchestrator: decompose multi-step work, track it with the plan tool, and verify with builds/tests.
-Work iteratively: inspect the repository, make precise edits, run builds/tests, diagnose failures.
-Use the provided tools instead of guessing. Issue independent tool calls together; they run in parallel.
-For parallelizable subtasks (codebase exploration, independent research, isolated changes), delegate to subagents and fold their summaries into your plan.
-Keep responses concise. When you change files, explain what changed and how to verify.
-Never run destructive commands without need, and respect tool denials.`
-
+// SystemPrompt lives in prompt.go: the full operating doctrine.
 // Event is a UI-facing happenstance of the loop.
 type Event struct {
 	Type     EventType
 	Text     string
 	Tool     string
 	Model    string
+	Usage    core.Usage
 	Switched *router.SwitchInfo
+	// Ok reports tool success for EvToolEnd.
+	Ok bool
+	// Depth marks subagent-nested events (0 = orchestrator itself).
+	Depth int
 }
 
 // EventType enumerates agent events.
@@ -40,10 +37,12 @@ type EventType string
 
 const (
 	EvToken     EventType = "token"
+	EvReasoning EventType = "reasoning"
 	EvToolStart EventType = "tool_start"
 	EvToolEnd   EventType = "tool_end"
 	EvAssistant EventType = "assistant"
 	EvSwitch    EventType = "model_switch"
+	EvUsage     EventType = "usage"
 	EvError     EventType = "error"
 	EvDone      EventType = "done"
 )
@@ -64,6 +63,31 @@ type Agent struct {
 	Depth int
 	// Prefs snapshot used for delegated subagents.
 	Prefs router.Prefs
+
+	subMu sync.Mutex
+	subs  []SubInfo
+}
+
+// SubInfo records one finished subagent for /agents and review.
+type SubInfo struct {
+	Task    string
+	Summary string
+	Model   string
+	Ms      int64
+	Ok      bool
+}
+
+// SnapshotSubs returns the subagent records so far.
+func (a *Agent) SnapshotSubs() []SubInfo {
+	a.subMu.Lock()
+	defer a.subMu.Unlock()
+	return append([]SubInfo(nil), a.subs...)
+}
+
+func (a *Agent) recordSub(s SubInfo) {
+	a.subMu.Lock()
+	defer a.subMu.Unlock()
+	a.subs = append(a.subs, s)
 }
 
 // New builds an agent.
@@ -82,7 +106,7 @@ func (a *Agent) emit(ev Event) {
 func (a *Agent) RunTurn(ctx context.Context, sess *Session2, prefs router.Prefs) (string, error) {
 	a.Prefs = prefs
 	if _, ok := a.Tools.Get("delegate"); !ok && a.Depth < maxDelegateDepth {
-		a.Tools.AddTool(DelegateTool(a.Router, a.Tools, prefs, a.Depth, a.Emit))
+		a.Tools.AddTool(DelegateTool(a, prefs))
 	}
 	if a.Hub != nil {
 		a.Tools.Policy.Approver = a.Hub.Ask
@@ -108,6 +132,8 @@ func (a *Agent) runDepth(ctx context.Context, sess *Session2, prefs router.Prefs
 			return last, err
 		}
 		sess.NoteModel(entry.Model.FullID())
+		sess.AddUsage(resp.Usage)
+		a.emit(Event{Type: EvUsage, Usage: resp.Usage, Model: entry.Model.FullID()})
 		if resp.Content != "" {
 			last = resp.Content
 		}
@@ -133,11 +159,12 @@ func (a *Agent) runDepth(ctx context.Context, sess *Session2, prefs router.Prefs
 				a.emit(Event{Type: EvToolStart, Tool: tc.Name, Text: tc.Arguments, Model: entry.Model.FullID()})
 				res, rerr := a.Tools.Execute(ctx, tc.Name, tc.Arguments)
 				content := res.Content
+				ok := rerr == nil && !res.IsError
 				if rerr != nil {
 					content = "tool framework error: " + rerr.Error()
 				}
 				out[i] = tres{idx: i, res: content}
-				a.emit(Event{Type: EvToolEnd, Tool: tc.Name, Text: content})
+				a.emit(Event{Type: EvToolEnd, Tool: tc.Name, Text: content, Ok: ok})
 			}()
 		}
 		wg.Wait()
@@ -200,6 +227,16 @@ func (a *Agent) consume(ctx context.Context, ch <-chan core.StreamEvent, sess *S
 			case core.EventToken:
 				out.Content += ev.Delta
 				a.emit(Event{Type: EvToken, Text: ev.Delta})
+			case core.EventReasoning:
+				a.emit(Event{Type: EvReasoning, Text: ev.Delta})
+			case core.EventToolProgress:
+				// Delegated server-side tool use: display only, never
+				// executed locally (it already ran behind the gateway).
+				if ev.Done {
+					a.emit(Event{Type: EvToolEnd, Tool: ev.Tool, Text: ev.Delta, Ok: ev.Ok})
+				} else {
+					a.emit(Event{Type: EvToolStart, Tool: ev.Tool, Text: ev.Delta})
+				}
 			case core.EventTool:
 				out.ToolCalls = append(out.ToolCalls, ev.ToolCalls...)
 			case core.EventDone:

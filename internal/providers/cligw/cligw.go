@@ -318,14 +318,38 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// runTokens mirrors step-finish token accounting.
+type runTokens struct {
+	Total     int64 `json:"total"`
+	Input     int64 `json:"input"`
+	Output    int64 `json:"output"`
+	Reasoning int64 `json:"reasoning"`
+}
+
+// runToolState mirrors a tool_use part state.
+type runToolState struct {
+	Status   string          `json:"status"`
+	Input    json.RawMessage `json:"input"`
+	Output   string          `json:"output"`
+	Title    string          `json:"title"`
+	Metadata struct {
+		Exit int `json:"exit"`
+	} `json:"metadata"`
+}
+
 // runEvent mirrors the `<bin> run --format json` JSONL envelope.
 type runEvent struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionID"`
-	Text      string `json:"text"`
+	Type      string     `json:"type"`
+	SessionID string     `json:"sessionID"`
+	Text      string     `json:"text"`
+	Tokens    *runTokens `json:"tokens"`
 	Part      struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type   string       `json:"type"`
+		Text   string       `json:"text"`
+		Tool   string       `json:"tool"`
+		CallID string       `json:"callID"`
+		Tokens *runTokens   `json:"tokens"`
+		State  runToolState `json:"state"`
 	} `json:"part"`
 	Error *struct {
 		Name string `json:"name"`
@@ -335,32 +359,87 @@ type runEvent struct {
 	} `json:"error"`
 }
 
-// ParseRunLine folds one JSONL event into accumulated text, returning a
-// terminal *core.ProviderError when the line is an error event.
-func ParseRunLine(line string, text *strings.Builder) *core.ProviderError {
+// runParsed is one decoded JSONL line.
+type runParsed struct {
+	textDelta      string
+	reasoningDelta string
+	usage          *core.Usage
+	tool           *runToolProgress
+	perr           *core.ProviderError
+}
+
+// runToolProgress describes one delegated server-side tool completion.
+// Only completed uses are surfaced (running states would leave orphaned
+// spinners); the agent loop never executes these — they already ran.
+type runToolProgress struct {
+	Name    string
+	Preview string
+	Ok      bool
+}
+
+// parseRunEvent decodes one `<bin> run --format json` line: text deltas,
+// reasoning deltas (with --thinking), step-finish usage, completed
+// delegated tool uses, and terminal errors.
+func parseRunEvent(line string) runParsed {
+	var out runParsed
 	line = strings.TrimSpace(line)
 	if line == "" || !strings.HasPrefix(line, "{") {
-		return nil
+		return out
 	}
 	var ev runEvent
 	if err := json.Unmarshal([]byte(line), &ev); err != nil {
-		return nil
+		return out
 	}
 	if ev.Type == "error" {
 		msg := "backend error"
 		if ev.Error != nil && ev.Error.Data.Message != "" {
 			msg = ev.Error.Data.Message
 		}
-		return &core.ProviderError{Code: core.ClassifyMessage(msg), Message: msg}
+		out.perr = &core.ProviderError{Code: core.ClassifyMessage(msg), Message: msg}
+		return out
 	}
-	if ev.Type == "text" {
+	switch ev.Type {
+	case "text":
 		if ev.Text != "" {
-			text.WriteString(ev.Text)
+			out.textDelta = ev.Text
 		} else if ev.Part.Text != "" {
-			text.WriteString(ev.Part.Text)
+			out.textDelta = ev.Part.Text
+		}
+	case "reasoning":
+		if ev.Text != "" {
+			out.reasoningDelta = ev.Text
+		} else if ev.Part.Text != "" {
+			out.reasoningDelta = ev.Part.Text
+		}
+	case "tool_use":
+		if ev.Part.State.Status == "completed" {
+			preview := ev.Part.State.Title
+			if preview == "" {
+				preview = firstLine(ev.Part.State.Output)
+			}
+			out.tool = &runToolProgress{Name: ev.Part.Tool, Preview: preview, Ok: ev.Part.State.Metadata.Exit == 0}
+		}
+	case "step_finish":
+		tok := ev.Tokens
+		if tok == nil {
+			tok = ev.Part.Tokens
+		}
+		if tok != nil {
+			out.usage = &core.Usage{Input: tok.Input, Output: tok.Output, Reasoning: tok.Reasoning}
 		}
 	}
-	return nil
+	return out
+}
+
+// ParseRunLine folds one JSONL event's text into the accumulator,
+// returning a terminal *core.ProviderError when the line is an error
+// event. Reasoning, usage, and tool progress use parseRunEvent.
+func ParseRunLine(line string, text *strings.Builder) *core.ProviderError {
+	p := parseRunEvent(line)
+	if p.textDelta != "" {
+		text.WriteString(p.textDelta)
+	}
+	return p.perr
 }
 
 // promptFor renders a ChatRequest as the single transcript prompt the
@@ -400,7 +479,7 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 	if strings.Contains(req.Model, "/") {
 		model = req.Model
 	}
-	c := a.bin(ctx, "run", "--format", "json", "-m", model, promptFor(req))
+	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model, promptFor(req))
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		return nil, &core.ProviderError{Code: core.ErrUnknown, Provider: a.be.Provider, Message: err.Error()}
@@ -411,14 +490,24 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 		return nil, &core.ProviderError{Code: core.ErrNetwork, Provider: a.be.Provider, Message: err.Error()}
 	}
 	var text strings.Builder
+	var usage core.Usage
 	var perr *core.ProviderError
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 4<<20), 4<<20)
 	for sc.Scan() {
-		if e := ParseRunLine(sc.Text(), &text); e != nil {
-			e.Provider = a.be.Provider
-			e.Model = req.Model
-			perr = e
+		p := parseRunEvent(sc.Text())
+		if p.textDelta != "" {
+			text.WriteString(p.textDelta)
+		}
+		if p.usage != nil {
+			usage.Input += p.usage.Input
+			usage.Output += p.usage.Output
+			usage.Reasoning += p.usage.Reasoning
+		}
+		if p.perr != nil {
+			p.perr.Provider = a.be.Provider
+			p.perr.Model = req.Model
+			perr = p.perr
 		}
 	}
 	werr := c.Wait()
@@ -434,7 +523,7 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 	if werr != nil && text.Len() == 0 {
 		return nil, &core.ProviderError{Code: core.ClassifyMessage(werrString(werr)), Provider: a.be.Provider, Model: req.Model, Message: "backend run failed: " + werrString(werr)}
 	}
-	return &core.ChatResponse{Content: text.String(), Model: req.Model, Provider: a.be.Provider}, nil
+	return &core.ChatResponse{Content: text.String(), Model: req.Model, Provider: a.be.Provider, Usage: usage}, nil
 }
 
 // Stream implements providers.Adapter by streaming `run` JSONL text parts.
@@ -444,7 +533,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 	if strings.Contains(req.Model, "/") {
 		model = req.Model
 	}
-	c := a.bin(ctx, "run", "--format", "json", "-m", model, promptFor(req))
+	c := a.bin(ctx, "run", "--format", "json", "--thinking", "-m", model, promptFor(req))
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -460,32 +549,71 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 	go func() {
 		defer close(ch)
 		defer cancel()
-		var text strings.Builder
+		var text, reasoning strings.Builder
+		var usage core.Usage
 		sc := bufio.NewScanner(stdout)
 		sc.Buffer(make([]byte, 4<<20), 4<<20)
+		emit := func(ev core.StreamEvent) bool {
+			select {
+			case ch <- ev:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
 		for sc.Scan() {
-			before := text.Len()
-			if e := ParseRunLine(sc.Text(), &text); e != nil {
-				e.Provider = a.be.Provider
-				e.Model = req.Model
-				ch <- core.StreamEvent{Type: core.EventError, Err: e}
+			p := parseRunEvent(sc.Text())
+			if p.perr != nil {
+				p.perr.Provider = a.be.Provider
+				p.perr.Model = req.Model
+				emit(core.StreamEvent{Type: core.EventError, Err: p.perr})
 				return
 			}
-			if d := text.Len() - before; d > 0 {
+			if p.textDelta != "" {
+				before := text.Len()
+				text.WriteString(p.textDelta)
 				full := text.String()
-				ch <- core.StreamEvent{Type: core.EventToken, Delta: full[before:]}
+				if !emit(core.StreamEvent{Type: core.EventToken, Delta: full[before:]}) {
+					return
+				}
+			}
+			if p.reasoningDelta != "" {
+				// Skip exact-prefix repeats (some backends re-emit
+				// cumulative snapshots); otherwise stream the chunk.
+				if cur := reasoning.String(); cur == "" || !strings.HasPrefix(p.reasoningDelta, cur) && !strings.HasPrefix(cur, p.reasoningDelta) {
+					reasoning.WriteString(p.reasoningDelta)
+					if !emit(core.StreamEvent{Type: core.EventReasoning, Delta: p.reasoningDelta}) {
+						return
+					}
+				} else if strings.HasPrefix(p.reasoningDelta, cur) && len(p.reasoningDelta) > len(cur) {
+					delta := p.reasoningDelta[len(cur):]
+					reasoning.WriteString(delta)
+					if !emit(core.StreamEvent{Type: core.EventReasoning, Delta: delta}) {
+						return
+					}
+				}
+			}
+			if p.usage != nil {
+				usage.Input += p.usage.Input
+				usage.Output += p.usage.Output
+				usage.Reasoning += p.usage.Reasoning
+			}
+			if p.tool != nil {
+				if !emit(core.StreamEvent{Type: core.EventToolProgress, Tool: p.tool.Name, Delta: p.tool.Preview, Done: true, Ok: p.tool.Ok}) {
+					return
+				}
 			}
 		}
 		if werr := c.Wait(); werr != nil && text.Len() == 0 {
 			msg := firstLine(stderr.String())
-			ch <- core.StreamEvent{Type: core.EventError, Err: &core.ProviderError{
+			emit(core.StreamEvent{Type: core.EventError, Err: &core.ProviderError{
 				Code:     core.ClassifyMessage(msg + " " + werrString(werr)),
 				Message:  nonEmpty(msg, "backend run failed"),
 				Provider: a.be.Provider, Model: req.Model,
-			}}
+			}})
 			return
 		}
-		ch <- core.StreamEvent{Type: core.EventDone}
+		emit(core.StreamEvent{Type: core.EventDone, Usage: usage})
 	}()
 	return ch, nil
 }
