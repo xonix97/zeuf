@@ -1,4 +1,5 @@
-import { theme } from "../theme";
+import { theme, symbols } from "../theme";
+import { visibleWidth, padRight, truncate } from "../utils";
 
 export interface ApprovalRequest {
   toolName: string;
@@ -12,22 +13,34 @@ export class ApprovalModal {
   render(width: number): string[] {
     if (!this.current) return [];
     const lines: string[] = [];
-    const boxW = Math.min(68, width - 4);
+    const boxW = Math.min(72, Math.max(46, width - 4));
+    const innerW = boxW - 2;
 
-    lines.push(theme.orange("┌─ TOOL APPROVAL REQUIRED " + "─".repeat(Math.max(0, boxW - 26)) + "┐"));
-    lines.push(theme.orange("│ ") + theme.bold("Tool: ") + theme.white(this.current.toolName));
-    
-    // Preview arguments
-    const argsSummary = this.current.argsJSON.slice(0, boxW - 10);
-    lines.push(theme.orange("│ ") + theme.dim("Args: ") + theme.dim(argsSummary));
-    lines.push(theme.orange("├" + "─".repeat(boxW) + "┤"));
+    const title = ` ⚠️  TOOL EXECUTION PERMISSION REQUIRED `;
+    const barLen = Math.max(0, boxW - visibleWidth(title) - 4);
     lines.push(
-      theme.orange("│ ") +
-      theme.bold("[y]") + " Allow once   " +
-      theme.bold("[a]") + " Always allow   " +
-      theme.bold("[n/Esc]") + " Deny"
+      theme.orange("╭─") +
+      theme.bold(theme.orange(title)) +
+      theme.orange("─".repeat(barLen) + "╮")
     );
-    lines.push(theme.orange("└" + "─".repeat(boxW) + "┘"));
+
+    const toolLine = ` ${symbols.zap} Action: ` + theme.bold(theme.white(this.current.toolName));
+    lines.push(theme.orange("│") + padRight(toolLine, innerW) + theme.orange("│"));
+
+    let argsPreview = this.current.argsJSON;
+    try {
+      const parsed = JSON.parse(this.current.argsJSON);
+      argsPreview = JSON.stringify(parsed, null, 2).replace(/\n/g, " ");
+    } catch {}
+
+    const argsLine = ` 📄 Details: ` + theme.dim(truncate(argsPreview, innerW - 14));
+    lines.push(theme.orange("│") + padRight(argsLine, innerW) + theme.orange("│"));
+    lines.push(theme.orange("├" + "─".repeat(innerW) + "┤"));
+
+    const optionsLine = ` [y] Allow Once   [a] Always Allow   [n/Esc] Deny`;
+    lines.push(theme.orange("│") + padRight(theme.bold(theme.white(optionsLine)), innerW) + theme.orange("│"));
+    lines.push(theme.orange("╰" + "─".repeat(innerW) + "╯"));
+
     return lines;
   }
 }

@@ -1,18 +1,20 @@
-import { theme } from "../theme";
+import { theme, symbols } from "../theme";
+import { visibleWidth, padRight, truncate } from "../utils";
 
 export interface SlashCommand {
   name: string;
+  icon: string;
   desc: string;
 }
 
 export const defaultSlashCommands: SlashCommand[] = [
-  { name: "/models", desc: "List and switch available AI models" },
-  { name: "/connect", desc: "Attach model backend (OpenRouter, Ollama, API key)" },
-  { name: "/clear", desc: "Clear current conversation viewport" },
-  { name: "/sessions", desc: "List and resume previous sessions" },
-  { name: "/status", desc: "Inspect current workspace and git status" },
-  { name: "/help", desc: "Show keyboard shortcuts and command reference" },
-  { name: "/exit", desc: "Quit Zeuf" },
+  { name: "/models", icon: "󰘧", desc: "List and switch available AI models (OpenCode, Claude, DeepSeek)" },
+  { name: "/connect", icon: "⚡", desc: "Configure model backends (Ollama localhost:11434, OpenRouter)" },
+  { name: "/clear", icon: "🧹", desc: "Clear conversation history & reset viewport" },
+  { name: "/sessions", icon: "📂", desc: "Browse and restore saved agent sessions" },
+  { name: "/status", icon: "📊", desc: "Inspect current workspace, git diffs & tokens" },
+  { name: "/help", icon: "❓", desc: "Show keyboard shortcuts & command cheat-sheet" },
+  { name: "/exit", icon: "🚪", desc: "Quit Zeuf" },
 ];
 
 export class CommandPopup {
@@ -20,27 +22,60 @@ export class CommandPopup {
 
   filter(input: string): SlashCommand[] {
     if (!input.startsWith("/")) return [];
-    const query = input.slice(1).toLowerCase();
-    return defaultSlashCommands.filter(c => c.name.slice(1).toLowerCase().includes(query));
+    const query = input.slice(1).toLowerCase().trim();
+    const byName = defaultSlashCommands.filter(c =>
+      c.name.slice(1).toLowerCase().startsWith(query)
+    );
+    if (byName.length > 0) {
+      if (this.selectedIdx >= byName.length) this.selectedIdx = 0;
+      return byName;
+    }
+    const byDesc = defaultSlashCommands.filter(c =>
+      c.desc.toLowerCase().includes(query)
+    );
+    if (this.selectedIdx >= byDesc.length) this.selectedIdx = 0;
+    return byDesc;
   }
 
   render(filtered: SlashCommand[], width: number): string[] {
     if (filtered.length === 0) return [];
     const lines: string[] = [];
-    const boxWidth = Math.min(60, width - 4);
+    const boxWidth = Math.max(40, width - 4);
 
-    lines.push(theme.border("┌─ COMMANDS " + "─".repeat(Math.max(0, boxWidth - 12)) + "┐"));
-    for (let i = 0; i < Math.min(filtered.length, 6); i++) {
+    // Top title bar
+    const title = ` ${symbols.brand} COMMAND PALETTE [↑↓: Navigate | Enter: Select | Esc: Cancel] `;
+    const barLen = Math.max(0, boxWidth - visibleWidth(title) - 4);
+    lines.push(
+      theme.borderActive("╭─") +
+      theme.bold(theme.accent(title)) +
+      theme.borderActive("─".repeat(barLen) + "╮")
+    );
+
+    const maxItems = Math.min(filtered.length, 6);
+    for (let i = 0; i < maxItems; i++) {
       const cmd = filtered[i];
       const isSel = i === this.selectedIdx;
-      const cursor = isSel ? theme.orange("› ") : "  ";
-      const name = isSel ? theme.bold(theme.white(cmd.name.padEnd(12))) : theme.dim(cmd.name.padEnd(12));
-      const desc = theme.dim(cmd.desc.slice(0, boxWidth - 18));
-      const row = `${cursor}${name} ${desc}`;
-      const padded = row + " ".repeat(Math.max(0, boxWidth - 2 - (cursor.length + name.length + desc.length)));
-      lines.push(theme.border("│ ") + row + theme.border(" │"));
+
+      const cursor = isSel ? theme.bold(theme.orange(" ▶ ")) : "   ";
+      const icon = `${cmd.icon} `;
+      const name = isSel ? theme.bold(theme.white(cmd.name.padEnd(12))) : theme.accent(cmd.name.padEnd(12));
+      const desc = isSel ? theme.white(cmd.desc) : theme.dim(cmd.desc);
+
+      const content = `${cursor}${icon}${name} ${desc}`;
+      const innerWidth = boxWidth - 2;
+
+      let rowContent = "";
+      if (isSel) {
+        // High-contrast highlighted line
+        rowContent = `\x1b[48;5;238m${padRight(content, innerWidth)}\x1b[0m`;
+      } else {
+        rowContent = padRight(content, innerWidth);
+      }
+
+      lines.push(theme.borderActive("│") + rowContent + theme.borderActive("│"));
     }
-    lines.push(theme.border("└" + "─".repeat(boxWidth) + "┘"));
+
+    lines.push(theme.borderActive("╰" + "─".repeat(boxWidth - 2) + "╯"));
     return lines;
   }
 }

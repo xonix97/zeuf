@@ -1,4 +1,4 @@
-import { theme } from "./theme";
+import { theme, symbols } from "./theme";
 import { ChatView } from "./components/chat";
 import { CommandPopup } from "./components/popup";
 import { ModelPicker } from "./components/picker";
@@ -10,6 +10,7 @@ import { ToolRegistry } from "../tools/registry";
 import { gitStatus } from "../tools/git";
 import { generateSessionId, loadSession, saveSession } from "../core/session";
 import type { SessionData, StreamEvent } from "../core/types";
+import { visibleWidth, padRight, padCenter, truncate } from "./utils";
 
 export class TUIApp {
   router: Router;
@@ -54,6 +55,7 @@ export class TUIApp {
       busy: false,
       tokensIn: 0,
       tokensOut: 0,
+      workdir,
     };
   }
 
@@ -78,7 +80,7 @@ export class TUIApp {
 
     // Load available models in background
     this.router.allModels().then(ms => {
-      if (this.statusState.model === "auto" && ms.length > 0) {
+      if ((this.statusState.model === "auto" || !this.statusState.model) && ms.length > 0) {
         this.statusState.model = ms[0].id;
       }
       this.render();
@@ -89,7 +91,9 @@ export class TUIApp {
     this.height = process.stdout.rows || 24;
 
     process.stdout.write("\x1b[?1049h"); // Alternate screen buffer
-    process.stdout.write("\x1b[?25h");   // Ensure cursor is shown
+    process.stdout.write("\x1b[2J");     // Clear entire screen
+    process.stdout.write("\x1b[?25l");   // Hide hardware cursor (we render a software block cursor)
+
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(true);
       process.stdin.resume();
@@ -111,64 +115,104 @@ export class TUIApp {
       process.stdin.setRawMode(false);
       process.stdin.pause();
     }
-    process.stdout.write("\x1b[?1049l"); // Restore screen
     process.stdout.write("\x1b[?25h");   // Show cursor
+    process.stdout.write("\x1b[?1049l"); // Restore screen
   }
 
   render(): void {
-    const out: string[] = [];
     const w = this.width;
     const h = this.height;
 
-    // Top border
-    out.push(theme.border("┌─ Zeuf " + "─".repeat(Math.max(0, w - 9)) + "┐"));
-
-    // Chat area lines
-    const chatHeight = Math.max(5, h - 8);
-    const chatLines = this.chatView.render(w - 2, chatHeight);
-    for (let i = 0; i < chatHeight; i++) {
-      const line = chatLines[i] || "";
-      const padded = line + " ".repeat(Math.max(0, w - 2 - line.replace(/\x1b\[[0-9;]*m/g, "").length));
-      out.push(theme.border("│") + padded + theme.border("│"));
-    }
-
-    // Modal Overlays (Approval / Picker / Popup)
+    // Determine overlays
+    let overlayLines: string[] = [];
     if (this.approval.current) {
-      const modalLines = this.approval.render(w);
-      for (const ml of modalLines) {
-        out.push(ml);
-      }
+      overlayLines = this.approval.render(w);
     } else if (this.picker.active) {
-      const pickerLines = this.picker.render(this.router.modelsCache, this.statusState.model, w, h);
-      for (const pl of pickerLines) {
-        out.push(pl);
-      }
+      overlayLines = this.picker.render(this.router.modelsCache, this.statusState.model, w, h);
     } else if (this.input.startsWith("/")) {
       const filtered = this.popup.filter(this.input);
-      const popLines = this.popup.render(filtered, w);
-      for (const pl of popLines) {
-        out.push(pl);
-      }
+      overlayLines = this.popup.render(filtered, w);
     }
 
-    // Input divider
-    out.push(theme.border("├" + "─".repeat(Math.max(0, w - 2)) + "┤"));
+    const headerHeight = 3;
+    const inputHeight = 3;
+    const statusHeight = 1;
+    const overlayHeight = overlayLines.length;
 
-    // Input line
-    const prompt = theme.orange("› ");
-    const inputPadded = prompt + this.input + " ".repeat(Math.max(0, w - 4 - this.input.length));
-    out.push(theme.border("│ ") + inputPadded + theme.border("│"));
+    const chatHeight = Math.max(3, h - (headerHeight + inputHeight + statusHeight + overlayHeight));
 
-    // Bottom border & Status bar
-    out.push(theme.border("└" + "─".repeat(Math.max(0, w - 2)) + "┘"));
-    out.push(renderStatusBar(this.statusState, w));
+    // Render chat lines
+    const chatLines = this.chatView.render(
+      w,
+      chatHeight,
+      this.statusState.model,
+      this.statusState.branch || "master"
+    );
 
-    // Paint frame
-    process.stdout.write("\x1b[H" + out.join("\n"));
+    const screenLines: string[] = [];
+
+    // 1. Header Frame (3 lines)
+    const title = ` ${symbols.brand} ZEUF ARCHITECT `;
+    const ver = ` v0.5.0 `;
+    const headerBorderLen = Math.max(0, w - visibleWidth(title) - visibleWidth(ver) - 4);
+    screenLines.push(
+      theme.borderActive("╭─") +
+      theme.bold(theme.accent(title)) +
+      theme.borderActive("─".repeat(headerBorderLen)) +
+      theme.dim(ver) +
+      theme.borderActive("─╮")
+    );
+
+    const homeDir = process.env.HOME || "";
+    const displayDir = this.tools.workdir.startsWith(homeDir)
+      ? "~" + this.tools.workdir.slice(homeDir.length)
+      : this.tools.workdir;
+    const dirStr = ` ${symbols.folder} ${truncate(displayDir, 26)} `;
+    const branchStr = this.statusState.branch ? ` ${symbols.branch} ${this.statusState.branch} ` : "";
+    const activeModelStr = ` ${symbols.dot} ${truncate(this.statusState.model, 32)} `;
+    const headerContent = `${theme.dim(dirStr)}│${theme.orange(branchStr)}│${theme.green(activeModelStr)}`;
+    screenLines.push(theme.borderActive("│") + padRight(headerContent, w - 2) + theme.borderActive("│"));
+    screenLines.push(theme.borderActive("╰" + "─".repeat(w - 2) + "╯"));
+
+    // 2. Chat Area
+    for (let i = 0; i < chatHeight; i++) {
+      const line = chatLines[i] || "";
+      screenLines.push(padRight(line, w));
+    }
+
+    // 3. Overlays (Approval / Picker / Slash Popup)
+    for (const ol of overlayLines) {
+      screenLines.push(padCenter(ol, w));
+    }
+
+    // 4. Input Container (3 lines)
+    const promptTitle = ` ${symbols.chat} Prompt `;
+    const promptHints = ` [Enter: Send | /: Commands | ^P: Models] `;
+    const inputBorderLen = Math.max(0, w - visibleWidth(promptTitle) - visibleWidth(promptHints) - 4);
+    screenLines.push(
+      theme.borderActive("╭─") +
+      theme.bold(theme.white(promptTitle)) +
+      theme.borderActive("─".repeat(inputBorderLen)) +
+      theme.dim(promptHints) +
+      theme.borderActive("─╮")
+    );
+
+    const cursorChar = theme.accent("█");
+    const promptArrow = theme.orange(" › ");
+    const inputRow = promptArrow + theme.bold(theme.white(this.input)) + cursorChar;
+    screenLines.push(theme.borderActive("│") + padRight(inputRow, w - 2) + theme.borderActive("│"));
+    screenLines.push(theme.borderActive("╰" + "─".repeat(w - 2) + "╯"));
+
+    // 5. Status Bar (1 line)
+    screenLines.push(renderStatusBar(this.statusState, w));
+
+    // Clamp output to height and draw
+    const finalLines = screenLines.slice(0, h);
+    process.stdout.write("\x1b[H" + finalLines.map(l => l + "\x1b[K").join("\n"));
   }
 
   private handleKey(key: string): void {
-    // Approval modal handling
+    // 1. Approval modal handling
     if (this.approval.current) {
       if (key === "y" || key === "Y") {
         this.approval.current.resolve("allow");
@@ -180,8 +224,8 @@ export class TUIApp {
       return;
     }
 
-    // Model picker handling (Ctrl+P)
-    if (key === "\x10") { // Ctrl+P
+    // 2. Model picker toggle (Ctrl+P)
+    if (key === "\x10") {
       if (this.picker.active) {
         this.picker.close();
       } else {
@@ -191,6 +235,7 @@ export class TUIApp {
       return;
     }
 
+    // 3. Model picker active interactions
     if (this.picker.active) {
       const filtered = this.picker.getFiltered(this.router.modelsCache);
       if (key === "\x1b" || key === "\x10") {
@@ -216,13 +261,63 @@ export class TUIApp {
       return;
     }
 
-    // Ctrl+C to quit or cancel
+    // 4. Slash popup active interactions
+    if (this.input.startsWith("/")) {
+      const filtered = this.popup.filter(this.input);
+      if (key === "\x1b[A") { // Up
+        this.popup.selectedIdx = Math.max(0, this.popup.selectedIdx - 1);
+        this.render();
+        return;
+      } else if (key === "\x1b[B") { // Down
+        this.popup.selectedIdx = Math.min(filtered.length - 1, this.popup.selectedIdx + 1);
+        this.render();
+        return;
+      } else if (key === "\t" || (key === "\r" && filtered.length > 0)) {
+        const sel = filtered[this.popup.selectedIdx];
+        if (sel) {
+          this.input = "";
+          this.render();
+          this.submitLine(sel.name);
+          return;
+        }
+      } else if (key === "\x1b") { // Esc dismisses popup
+        this.input = "";
+        this.render();
+        return;
+      }
+    }
+
+    // 5. Ctrl+C to quit or cancel
     if (key === "\x03") {
       this.cleanup();
       process.exit(0);
     }
 
-    // Enter
+    // 6. Up / Down History Navigation (when not in popup)
+    if (key === "\x1b[A") {
+      if (this.history.length > 0) {
+        if (this.historyIdx === -1) this.historyIdx = this.history.length - 1;
+        else this.historyIdx = Math.max(0, this.historyIdx - 1);
+        this.input = this.history[this.historyIdx] || "";
+        this.render();
+      }
+      return;
+    }
+    if (key === "\x1b[B") {
+      if (this.history.length > 0 && this.historyIdx !== -1) {
+        if (this.historyIdx < this.history.length - 1) {
+          this.historyIdx++;
+          this.input = this.history[this.historyIdx] || "";
+        } else {
+          this.historyIdx = -1;
+          this.input = "";
+        }
+        this.render();
+      }
+      return;
+    }
+
+    // 7. Enter to submit
     if (key === "\r") {
       const line = this.input.trim();
       if (!line) return;
@@ -230,13 +325,13 @@ export class TUIApp {
       this.input = "";
       this.cursorPos = 0;
       this.history.push(line);
-      this.historyIdx = this.history.length;
+      this.historyIdx = -1;
 
       this.submitLine(line);
       return;
     }
 
-    // Backspace
+    // 8. Backspace
     if (key === "\x7f" || key === "\b") {
       if (this.input.length > 0) {
         this.input = this.input.slice(0, -1);
@@ -245,17 +340,7 @@ export class TUIApp {
       return;
     }
 
-    // Tab autocomplete
-    if (key === "\t" && this.input.startsWith("/")) {
-      const filtered = this.popup.filter(this.input);
-      if (filtered.length > 0) {
-        this.input = filtered[0].name + " ";
-      }
-      this.render();
-      return;
-    }
-
-    // Printable character
+    // 9. Printable characters
     if (key.length === 1 && key >= " ") {
       this.input += key;
       this.render();
@@ -274,7 +359,7 @@ export class TUIApp {
       if (cmd === "/help") {
         this.chatView.append({
           type: "system",
-          text: "Commands: /models (switch models), /clear (clear chat), /status, /exit. Shortcut: Ctrl+P for model switcher.",
+          text: "Commands: /models (switch models), /clear (clear chat), /sessions, /status, /exit. Shortcut: Ctrl+P for model switcher.",
         });
         this.render();
         return;
@@ -288,15 +373,24 @@ export class TUIApp {
         this.render();
         return;
       }
+      if (cmd === "/status") {
+        const { branch, dirty } = await gitStatus(this.tools.workdir);
+        this.chatView.append({
+          type: "system",
+          text: `Workspace: ${this.tools.workdir} | Branch: ${branch}${dirty ? " (dirty)" : " (clean)"} | Model: ${this.statusState.model}`,
+        });
+        this.render();
+        return;
+      }
     }
 
-    // User message block
+    // User message card
     this.chatView.append({ type: "user", text: line });
     this.statusState.busy = true;
     this.statusState.turnStart = Date.now();
     this.render();
 
-    // Streaming assistant block
+    // Streaming assistant card
     let assistantBlock: { text: string } | null = null;
 
     try {
@@ -312,7 +406,11 @@ export class TUIApp {
           } else if (ev.type === "token" && ev.text) {
             if (!assistantBlock) {
               assistantBlock = { text: "" };
-              this.chatView.append({ type: "assistant", text: "" });
+              this.chatView.append({
+                type: "assistant",
+                text: "",
+                model: this.statusState.model,
+              });
             }
             assistantBlock.text += ev.text;
             const last = this.chatView.blocks[this.chatView.blocks.length - 1];
