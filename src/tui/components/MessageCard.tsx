@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { editorial } from "../editorialTheme";
+import { MarkdownView } from "./MarkdownView";
 
 export interface MessageCardProps {
   role: "user" | "assistant" | "system" | "error";
@@ -19,11 +20,11 @@ export const MessageCard: React.FC<MessageCardProps> = ({ role, text, model, tim
         paddingX={1}
         marginY={1}
       >
-        <Box justifyContent="space-between">
+        <Box justifyContent="space-between" marginBottom={1}>
           <Text bold color={editorial.gold}> YOU</Text>
           {timestamp && <Text color={editorial.creamMute}>{timestamp}</Text>}
         </Box>
-        <Text bold color={editorial.cream}>{text}</Text>
+        <MarkdownView content={text} />
       </Box>
     );
   }
@@ -37,14 +38,14 @@ export const MessageCard: React.FC<MessageCardProps> = ({ role, text, model, tim
         paddingX={1}
         marginY={1}
       >
-        <Box justifyContent="space-between">
+        <Box justifyContent="space-between" marginBottom={1}>
           <Box gap={1}>
             <Text bold backgroundColor={editorial.paper} color={editorial.ink}> zeuf. </Text>
             {model && <Text color={editorial.creamDim}>[{model.replace(/^opencode\//, "")}]</Text>}
           </Box>
           {timestamp && <Text color={editorial.creamMute}>{timestamp}</Text>}
         </Box>
-        <Text color={editorial.creamSoft}>{text}</Text>
+        <MarkdownView content={text} />
       </Box>
     );
   }
@@ -58,7 +59,7 @@ export const MessageCard: React.FC<MessageCardProps> = ({ role, text, model, tim
         paddingX={1}
         marginY={1}
       >
-        <Box justifyContent="space-between">
+        <Box justifyContent="space-between" marginBottom={1}>
           <Text bold backgroundColor={editorial.rust} color={editorial.ink}> ERROR </Text>
           {timestamp && <Text color={editorial.creamMute}>{timestamp}</Text>}
         </Box>
@@ -68,8 +69,11 @@ export const MessageCard: React.FC<MessageCardProps> = ({ role, text, model, tim
   }
 
   return (
-    <Box marginY={1} paddingLeft={1}>
-      <Text color={editorial.creamMute}>✦ {text}</Text>
+    <Box marginY={1} paddingLeft={1} flexDirection="column">
+      <Box gap={1}>
+        <Text color={editorial.creamMute}>✦</Text>
+        <MarkdownView content={text} />
+      </Box>
     </Box>
   );
 };
