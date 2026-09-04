@@ -3,14 +3,14 @@
 all: build
 
 build:
-	go build -v -o zeuf main.go
+	bun build --compile --target=bun ./bin/zeuf.ts --outfile zeuf
 
 install: build
 	install -Dm755 zeuf $(HOME)/.local/bin/zeuf
 	install -Dm755 zeuf $(HOME)/bin/zeuf 2>/dev/null || true
 
 test:
-	go test -v ./...
+	bun test
 
 clean:
 	rm -f zeuf

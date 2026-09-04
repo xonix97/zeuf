@@ -1,3 +1,4 @@
 zeuf
 *.exe
 .env
+node_modules/
