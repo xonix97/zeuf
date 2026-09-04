@@ -4,6 +4,7 @@ import { ToolRegistry } from "../src/tools/registry";
 import { Orchestrator } from "../src/agent/orchestrator";
 import { runTUI } from "../src/tui/index";
 import { listSessions, generateSessionId } from "../src/core/session";
+import { loadAllMemory, addMemoryItem, clearMemory, getProjectMemoryPath, getGlobalMemoryPath } from "../src/core/memory";
 import { theme } from "../src/tui/theme";
 import type { StreamEvent } from "../src/core/types";
 
@@ -24,6 +25,7 @@ Available Commands:
   models        List available AI models and their health
   providers     Show provider backend reachability
   sessions      List saved sessions
+  memory        Inspect or manage persistent project & global memory
   doctor        Check environment, API keys, and backends
   help          Show this help message
 
@@ -105,7 +107,68 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // 4. Headless run
+  // 4. Memory
+  if (cmd === "memory") {
+    const sub = args[1];
+    if (sub === "add") {
+      const isGlobal = args.includes("--global");
+      const catIdx = args.indexOf("--category");
+      const category = catIdx !== -1 && args[catIdx + 1] ? args[catIdx + 1] : "Conventions";
+      const factParts: string[] = [];
+      for (let i = 2; i < args.length; i++) {
+        if (args[i] === "--global") continue;
+        if (args[i] === "--category") {
+          i++; // skip flag value
+          continue;
+        }
+        if (args[i].startsWith("-")) continue;
+        factParts.push(args[i]);
+      }
+      const fact = factParts.join(" ").trim();
+      if (!fact) {
+        console.error("Error: memory fact required. Usage: zeuf memory add <text> [--global] [--category <cat>]");
+        process.exit(1);
+      }
+      const res = addMemoryItem(process.cwd(), fact, category, isGlobal ? "global" : "project");
+      if (res.added) {
+        console.log(`${theme.green("✓")} Added to ${isGlobal ? "global" : "project"} memory [${category}]: "${fact}" (Total: ${res.count})`);
+      } else {
+        console.log(`${theme.dim("●")} Fact already exists in ${isGlobal ? "global" : "project"} memory.`);
+      }
+      process.exit(0);
+    }
+
+    if (sub === "clear") {
+      const isGlobal = args.includes("--global");
+      const isAll = args.includes("--all");
+      const scope = isAll ? "all" : isGlobal ? "global" : "project";
+      clearMemory(process.cwd(), scope);
+      console.log(`${theme.green("✓")} Cleared ${scope} memory.`);
+      process.exit(0);
+    }
+
+    // Default: print memory
+    const { project, global, itemCount } = loadAllMemory(process.cwd());
+    console.log(theme.bold(`ZEUF PERSISTENT MEMORY (${itemCount} total facts)\n`));
+
+    console.log(theme.bold(`📁 PROJECT MEMORY: ${theme.dim(getProjectMemoryPath(process.cwd()))}`));
+    if (project) {
+      console.log(project);
+    } else {
+      console.log(theme.dim("  (No project memory yet. Add with: zeuf memory add \"<fact>\")"));
+    }
+
+    console.log("\n" + theme.bold(`🌐 GLOBAL MEMORY: ${theme.dim(getGlobalMemoryPath())}`));
+    if (global) {
+      console.log(global);
+    } else {
+      console.log(theme.dim("  (No global memory yet. Add with: zeuf memory add \"<fact>\" --global)"));
+    }
+
+    process.exit(0);
+  }
+
+  // 5. Headless run
   if (cmd === "run" || cmd === "exec" || plain) {
     let task = args.filter(a => !a.startsWith("-") && a !== "run" && a !== "exec").join(" ");
     if (!task) {

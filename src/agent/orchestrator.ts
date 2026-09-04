@@ -3,6 +3,7 @@ import type { ToolRegistry } from "../tools/registry";
 import type { SessionData, StreamEvent } from "../core/types";
 import { ConversationContext } from "./context";
 import { gitStatus } from "../tools/git";
+import { formatMemoryForPrompt } from "../core/memory";
 
 export function isConversational(task: string): boolean {
   const lower = task.trim().toLowerCase().replace(/[!?. ]+$/, "");
@@ -20,6 +21,10 @@ export function isConversational(task: string): boolean {
     case "what is zeuf":
     case "help":
     case "what can you do":
+    case "memory":
+    case "show memory":
+    case "what do you remember":
+    case "what do you know":
       return true;
     default:
       return false;
@@ -42,6 +47,7 @@ export class Orchestrator {
     pinnedModel?: string
   ): Promise<string> {
     const taskTrim = task.trim();
+    const memoryPrompt = formatMemoryForPrompt(this.tools.workdir);
 
     // 1. Conversational Fast-Path
     if (isConversational(taskTrim)) {
@@ -51,7 +57,7 @@ export class Orchestrator {
         messages: [
           {
             role: "system" as const,
-            content: "You are Zeuf, a fast, reliable, developer-focused agentic coding assistant. Respond warmly, concisely, and helpfully.",
+            content: `You are Zeuf, a fast, reliable, developer-focused agentic coding assistant. Respond warmly, concisely, and helpfully.${memoryPrompt ? `\n\n${memoryPrompt}` : ""}`,
           },
           { role: "user" as const, content: taskTrim },
         ],
@@ -78,11 +84,12 @@ export class Orchestrator {
 Working directory: ${this.tools.workdir}
 Git branch: ${branch || "none"}
 Pre-existing dirty files: ${dirty.join(", ") || "clean"}
-
+${memoryPrompt ? `\n${memoryPrompt}\n` : ""}
 OPERATING RULES:
 1. Act surgically and directly. Use your tools to inspect, edit, test, and verify.
 2. Only run relevant tests when code is modified. Do not guess non-existent test runners.
-3. Be concise and truthful in your final summary. Do not output marketing fluff.`;
+3. Be concise and truthful in your final summary. Do not output marketing fluff.
+4. If you learn a key project convention, architecture rule, or user preference, preserve it using the 'remember' tool.`;
 
     const ctx = new ConversationContext(systemPrompt);
     for (const m of session.messages) {

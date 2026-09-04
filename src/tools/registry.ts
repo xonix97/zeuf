@@ -3,6 +3,7 @@ import { readFile, writeFile, editFile, type ReadArgs, type WriteArgs, type Edit
 import { executeBash, type BashArgs } from "./shell";
 import { executeGlob, executeGrep, type GlobArgs, type GrepArgs } from "./search";
 import { gitDiff, gitStatus } from "./git";
+import { rememberTool, forgetTool, type RememberArgs, type ForgetArgs } from "./memory";
 
 export type ApproverFn = (toolName: string, argsJSON: string) => Promise<"allow" | "always" | "deny">;
 
@@ -96,6 +97,31 @@ export class ToolRegistry {
           required: ["pattern"],
         },
       },
+      {
+        name: "remember",
+        description: "Save a key project convention, architecture pattern, command, user preference, or learned fact into persistent memory across sessions.",
+        parameters: {
+          type: "object",
+          properties: {
+            fact: { type: "string", description: "The fact, rule, or preference to remember" },
+            category: { type: "string", description: "Category name such as Conventions, Architecture, Preferences (default: Conventions)" },
+            scope: { type: "string", enum: ["project", "global"], description: "Storage scope: 'project' for this repo, 'global' across all repos (default: project)" },
+          },
+          required: ["fact"],
+        },
+      },
+      {
+        name: "forget",
+        description: "Remove an outdated, incorrect, or superseded fact from persistent memory.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Text or keyword to match and remove from memory" },
+            scope: { type: "string", enum: ["project", "global"], description: "Scope to remove from (default: project)" },
+          },
+          required: ["query"],
+        },
+      },
     ];
   }
 
@@ -148,6 +174,14 @@ export class ToolRegistry {
       }
       case "grep": {
         const res = await executeGrep(this.workdir, args as GrepArgs);
+        return { toolCallId, name, content: res.content, isError: res.isError };
+      }
+      case "remember": {
+        const res = rememberTool(this.workdir, args as RememberArgs);
+        return { toolCallId, name, content: res.content, isError: res.isError };
+      }
+      case "forget": {
+        const res = forgetTool(this.workdir, args as ForgetArgs);
         return { toolCallId, name, content: res.content, isError: res.isError };
       }
       default:

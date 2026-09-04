@@ -16,6 +16,7 @@ import { Router } from "../providers/router";
 import { ToolRegistry } from "../tools/registry";
 import { gitStatus } from "../tools/git";
 import { generateSessionId, loadSession, saveSession } from "../core/session";
+import { loadAllMemory, addMemoryItem, removeMemoryItem } from "../core/memory";
 import type { SessionData, StreamEvent, ModelInfo } from "../core/types";
 
 export interface AppBlock {
@@ -151,13 +152,35 @@ export const App: React.FC<AppProps> = ({
       setShowModelPicker(true);
       return;
     }
+    if (item.value === "/memory") {
+      const { project, global, itemCount } = loadAllMemory(workdir);
+      let text = `Persistent Memory (${itemCount} facts active):\n`;
+      if (project) {
+        text += `\n[Project: .zeuf/memory.md]\n${project}\n`;
+      }
+      if (global) {
+        text += `\n[Global: ~/.zeuf/memory.md]\n${global}\n`;
+      }
+      if (itemCount === 0) {
+        text = "No persistent memories saved yet.\nUse `/remember <fact>` to save project conventions or architecture rules.";
+      }
+      setBlocks(prev => [
+        ...prev,
+        {
+          id: String(Date.now()),
+          type: "system",
+          text: text.trim(),
+        },
+      ]);
+      return;
+    }
     if (item.value === "/help") {
       setBlocks(prev => [
         ...prev,
         {
           id: String(Date.now()),
           type: "system",
-          text: "Commands: /models, /clear, /sessions, /status, /exit. Keybindings: Ctrl+P (models), Ctrl+C (quit), Esc (dismiss).",
+          text: "Commands: /models, /memory, /clear, /sessions, /status, /exit. Keybindings: Ctrl+P (models), Ctrl+C (quit), Esc (dismiss).",
         },
       ]);
       return;
@@ -204,6 +227,47 @@ export const App: React.FC<AppProps> = ({
     setInput("");
     setShowCommandPalette(false);
     setShowModelPicker(false);
+
+    if (text === "/memory") {
+      handleCommandSelect({ label: "/memory", value: "/memory" });
+      return;
+    }
+
+    if (text.startsWith("/remember ")) {
+      const fact = text.slice(10).trim();
+      if (fact) {
+        const res = addMemoryItem(workdir, fact, "Conventions", "project");
+        setBlocks(prev => [
+          ...prev,
+          {
+            id: String(Date.now()),
+            type: "system",
+            text: res.added
+              ? `✓ Saved to project memory (.zeuf/memory.md): "${fact}"`
+              : `Fact already recorded in project memory: "${fact}"`,
+          },
+        ]);
+        return;
+      }
+    }
+
+    if (text.startsWith("/forget ")) {
+      const query = text.slice(8).trim();
+      if (query) {
+        const removed = removeMemoryItem(workdir, query, "project");
+        setBlocks(prev => [
+          ...prev,
+          {
+            id: String(Date.now()),
+            type: "system",
+            text: removed
+              ? `✓ Removed from project memory: "${query}"`
+              : `No memory found matching: "${query}"`,
+          },
+        ]);
+        return;
+      }
+    }
 
     // Add user message block
     const userBlockId = String(Date.now());
