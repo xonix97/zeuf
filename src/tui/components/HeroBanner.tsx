@@ -50,7 +50,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
             <Text color={editorial.creamMute}>CORE</Text>
           </Box>
           <Text color={editorial.creamSoft}>• Smart model router (auto-switch)</Text>
-          <Text color={editorial.creamSoft}>• Persistent memory (.zeuf/memory.md)</Text>
+          <Text color={editorial.creamSoft}>• Chat memory (session-scoped)</Text>
           <Text color={editorial.creamSoft}>• Real tool execution (bounded)</Text>
           <Text color={editorial.creamSoft}>• Approvals hub (sensitive gate)</Text>
         </Box>

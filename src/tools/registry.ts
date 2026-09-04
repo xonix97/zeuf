@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolResult } from "../core/types";
+import type { ToolDefinition, ToolResult, SessionData } from "../core/types";
 import { readFile, writeFile, editFile, type ReadArgs, type WriteArgs, type EditArgs } from "./file";
 import { executeBash, type BashArgs } from "./shell";
 import { executeGlob, executeGrep, type GlobArgs, type GrepArgs } from "./search";
@@ -11,13 +11,24 @@ export class ToolRegistry {
   workdir: string;
   autoApprove: boolean;
   approver?: ApproverFn;
+  session?: SessionData;
   alwaysAllowed: Set<string> = new Set();
   modifiedFiles: Set<string> = new Set();
 
-  constructor(workdir: string = process.cwd(), autoApprove: boolean = false, approver?: ApproverFn) {
+  constructor(
+    workdir: string = process.cwd(),
+    autoApprove: boolean = false,
+    approver?: ApproverFn,
+    session?: SessionData
+  ) {
     this.workdir = workdir;
     this.autoApprove = autoApprove;
     this.approver = approver;
+    this.session = session;
+  }
+
+  setSession(session: SessionData): void {
+    this.session = session;
   }
 
   definitions(): ToolDefinition[] {
@@ -99,25 +110,22 @@ export class ToolRegistry {
       },
       {
         name: "remember",
-        description: "Save a key project convention, architecture pattern, command, user preference, or learned fact into persistent memory across sessions.",
+        description: "Save a key user preference, instruction, or fact into memory for this chat session.",
         parameters: {
           type: "object",
           properties: {
-            fact: { type: "string", description: "The fact, rule, or preference to remember" },
-            category: { type: "string", description: "Category name such as Conventions, Architecture, Preferences (default: Conventions)" },
-            scope: { type: "string", enum: ["project", "global"], description: "Storage scope: 'project' for this repo, 'global' across all repos (default: project)" },
+            fact: { type: "string", description: "The fact, rule, or preference to remember for this chat session" },
           },
           required: ["fact"],
         },
       },
       {
         name: "forget",
-        description: "Remove an outdated, incorrect, or superseded fact from persistent memory.",
+        description: "Remove a fact from memory for this chat session.",
         parameters: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Text or keyword to match and remove from memory" },
-            scope: { type: "string", enum: ["project", "global"], description: "Scope to remove from (default: project)" },
+            query: { type: "string", description: "Text or keyword to match and remove from chat memory" },
           },
           required: ["query"],
         },
@@ -177,11 +185,11 @@ export class ToolRegistry {
         return { toolCallId, name, content: res.content, isError: res.isError };
       }
       case "remember": {
-        const res = rememberTool(this.workdir, args as RememberArgs);
+        const res = rememberTool(this.session, args as RememberArgs);
         return { toolCallId, name, content: res.content, isError: res.isError };
       }
       case "forget": {
-        const res = forgetTool(this.workdir, args as ForgetArgs);
+        const res = forgetTool(this.session, args as ForgetArgs);
         return { toolCallId, name, content: res.content, isError: res.isError };
       }
       default:

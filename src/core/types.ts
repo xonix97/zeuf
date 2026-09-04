@@ -114,6 +114,7 @@ export interface SessionData {
   messages: Message[];
   modifiedFiles: string[];
   checkpoints: Checkpoint[];
+  memory?: string[];
 }
 
 export interface Checkpoint {

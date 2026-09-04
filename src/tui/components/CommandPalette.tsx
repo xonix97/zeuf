@@ -11,7 +11,7 @@ export interface CommandItem {
 export const defaultCommands: CommandItem[] = [
   { label: "01  /models    — List and switch available AI models", value: "/models" },
   { label: "02  /connect   — Configure backends (Ollama localhost:11434, OpenRouter)", value: "/connect" },
-  { label: "03  /memory    — Inspect persistent project & global memory", value: "/memory" },
+  { label: "03  /memory    — Inspect active chat session memory", value: "/memory" },
   { label: "04  /sessions  — Browse and restore saved agent sessions", value: "/sessions" },
   { label: "05  /status    — Inspect workspace, git diffs & tokens", value: "/status" },
   { label: "06  /clear     — Clear conversation viewport", value: "/clear" },

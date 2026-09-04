@@ -3,8 +3,7 @@ import { Router } from "../src/providers/router";
 import { ToolRegistry } from "../src/tools/registry";
 import { Orchestrator } from "../src/agent/orchestrator";
 import { runTUI } from "../src/tui/index";
-import { listSessions, generateSessionId } from "../src/core/session";
-import { loadAllMemory, addMemoryItem, clearMemory, getProjectMemoryPath, getGlobalMemoryPath } from "../src/core/memory";
+import { listSessions, generateSessionId, loadSession, saveSession } from "../src/core/session";
 import { theme } from "../src/tui/theme";
 import type { StreamEvent } from "../src/core/types";
 
@@ -25,7 +24,7 @@ Available Commands:
   models        List available AI models and their health
   providers     Show provider backend reachability
   sessions      List saved sessions
-  memory        Inspect or manage persistent project & global memory
+  memory [id]   Inspect or clear memory for a chat session
   doctor        Check environment, API keys, and backends
   help          Show this help message
 
@@ -107,64 +106,39 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // 4. Memory
+  // 4. Memory (Per-chat session memory)
   if (cmd === "memory") {
     const sub = args[1];
-    if (sub === "add") {
-      const isGlobal = args.includes("--global");
-      const catIdx = args.indexOf("--category");
-      const category = catIdx !== -1 && args[catIdx + 1] ? args[catIdx + 1] : "Conventions";
-      const factParts: string[] = [];
-      for (let i = 2; i < args.length; i++) {
-        if (args[i] === "--global") continue;
-        if (args[i] === "--category") {
-          i++; // skip flag value
-          continue;
-        }
-        if (args[i].startsWith("-")) continue;
-        factParts.push(args[i]);
-      }
-      const fact = factParts.join(" ").trim();
-      if (!fact) {
-        console.error("Error: memory fact required. Usage: zeuf memory add <text> [--global] [--category <cat>]");
-        process.exit(1);
-      }
-      const res = addMemoryItem(process.cwd(), fact, category, isGlobal ? "global" : "project");
-      if (res.added) {
-        console.log(`${theme.green("✓")} Added to ${isGlobal ? "global" : "project"} memory [${category}]: "${fact}" (Total: ${res.count})`);
-      } else {
-        console.log(`${theme.dim("●")} Fact already exists in ${isGlobal ? "global" : "project"} memory.`);
-      }
+    const sessions = listSessions();
+    if (sessions.length === 0) {
+      console.log("No saved chat sessions.");
       process.exit(0);
     }
 
-    if (sub === "clear") {
-      const isGlobal = args.includes("--global");
-      const isAll = args.includes("--all");
-      const scope = isAll ? "all" : isGlobal ? "global" : "project";
-      clearMemory(process.cwd(), scope);
-      console.log(`${theme.green("✓")} Cleared ${scope} memory.`);
+    const isClear = sub === "clear" || args[2] === "clear";
+    const targetSessionId = (sub && sub !== "clear") ? sub : sessions[0].id;
+    const targetSession = loadSession(targetSessionId);
+    if (!targetSession) {
+      console.log(`Session not found: ${targetSessionId}`);
+      process.exit(1);
+    }
+
+    if (isClear) {
+      targetSession.memory = [];
+      saveSession(targetSession);
+      console.log(`${theme.green("✓")} Cleared chat memory for session ${targetSessionId}.`);
       process.exit(0);
     }
 
-    // Default: print memory
-    const { project, global, itemCount } = loadAllMemory(process.cwd());
-    console.log(theme.bold(`ZEUF PERSISTENT MEMORY (${itemCount} total facts)\n`));
-
-    console.log(theme.bold(`📁 PROJECT MEMORY: ${theme.dim(getProjectMemoryPath(process.cwd()))}`));
-    if (project) {
-      console.log(project);
+    const mem = targetSession.memory || [];
+    console.log(theme.bold(`CHAT SESSION MEMORY [${targetSession.id}] (${mem.length} items)\n`));
+    if (mem.length > 0) {
+      for (const m of mem) {
+        console.log(`• ${m}`);
+      }
     } else {
-      console.log(theme.dim("  (No project memory yet. Add with: zeuf memory add \"<fact>\")"));
+      console.log(theme.dim("  (No memories recorded for this chat session yet.)"));
     }
-
-    console.log("\n" + theme.bold(`🌐 GLOBAL MEMORY: ${theme.dim(getGlobalMemoryPath())}`));
-    if (global) {
-      console.log(global);
-    } else {
-      console.log(theme.dim("  (No global memory yet. Add with: zeuf memory add \"<fact>\" --global)"));
-    }
-
     process.exit(0);
   }
 

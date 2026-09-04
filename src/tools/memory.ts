@@ -1,62 +1,64 @@
-import { addMemoryItem, removeMemoryItem, type MemoryScope } from "../core/memory";
+import type { SessionData } from "../core/types";
+import { addChatMemory, removeChatMemory, initSessionMemory } from "../core/memory";
 
 export interface RememberArgs {
   fact: string;
-  category?: string;
-  scope?: MemoryScope;
 }
 
 export interface ForgetArgs {
   query: string;
-  scope?: MemoryScope;
 }
 
 export function rememberTool(
-  workdir: string,
-  args: RememberArgs
+  session?: SessionData,
+  args?: RememberArgs
 ): { content: string; isError: boolean } {
-  const fact = (args.fact || "").trim();
+  if (!session) {
+    return { content: "Error: No active chat session to record memory.", isError: true };
+  }
+
+  const fact = (args?.fact || "").trim();
   if (!fact) {
     return { content: "Error: 'fact' parameter is required for remember tool.", isError: true };
   }
 
-  const category = (args.category || "Conventions").trim();
-  const scope: MemoryScope = args.scope === "global" ? "global" : "project";
-
-  const { added, count } = addMemoryItem(workdir, fact, category, scope);
+  const { added, count } = addChatMemory(session, fact);
   if (added) {
     return {
-      content: `Saved to ${scope} memory [${category}]: "${fact}" (Total active memories: ${count})`,
+      content: `Saved to chat memory: "${fact}" (${count} total memories in this chat)`,
       isError: false,
     };
   } else {
     return {
-      content: `Memory already contains: "${fact}" in ${scope} scope.`,
+      content: `Chat memory already contains: "${fact}"`,
       isError: false,
     };
   }
 }
 
 export function forgetTool(
-  workdir: string,
-  args: ForgetArgs
+  session?: SessionData,
+  args?: ForgetArgs
 ): { content: string; isError: boolean } {
-  const query = (args.query || "").trim();
+  if (!session) {
+    return { content: "Error: No active chat session to modify memory.", isError: true };
+  }
+
+  const query = (args?.query || "").trim();
   if (!query) {
     return { content: "Error: 'query' parameter is required for forget tool.", isError: true };
   }
 
-  const scope: MemoryScope = args.scope === "global" ? "global" : "project";
-  const removed = removeMemoryItem(workdir, query, scope);
-
+  const removed = removeChatMemory(session, query);
   if (removed) {
+    const remaining = initSessionMemory(session).length;
     return {
-      content: `Removed memory matching "${query}" from ${scope} memory.`,
+      content: `Removed memory matching "${query}" from this chat. (${remaining} remaining)`,
       isError: false,
     };
   } else {
     return {
-      content: `No memory found matching "${query}" in ${scope} memory.`,
+      content: `No memory found matching "${query}" in this chat session.`,
       isError: false,
     };
   }

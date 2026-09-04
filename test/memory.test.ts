@@ -1,101 +1,113 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
+import { describe, it, expect } from "bun:test";
 import {
-  addMemoryItem,
-  removeMemoryItem,
-  loadMemoryFile,
-  parseMemoryMarkdown,
-  renderMemoryMarkdown,
-  clearMemory,
-  loadAllMemory,
-  formatMemoryForPrompt,
-  getProjectMemoryPath,
+  initSessionMemory,
+  addChatMemory,
+  removeChatMemory,
+  clearChatMemory,
+  formatChatMemoryForPrompt,
   extractAndSaveAutoMemory,
 } from "../src/core/memory";
+import type { SessionData } from "../src/core/types";
 import { ToolRegistry } from "../src/tools/registry";
 
-describe("Zeuf Persistent Memory Layer", () => {
-  let tempWorkdir: string;
+function createMockSession(id: string = "test-session"): SessionData {
+  return {
+    id,
+    task: "test task",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    model: "auto",
+    messages: [],
+    modifiedFiles: [],
+    checkpoints: [],
+    memory: [],
+  };
+}
 
-  beforeEach(() => {
-    tempWorkdir = fs.mkdtempSync(path.join(os.tmpdir(), "zeuf-mem-test-"));
-  });
+describe("Zeuf Per-Chat Session Memory Layer", () => {
+  it("initializes and adds memory items to a chat session", () => {
+    const session = createMockSession();
+    expect(initSessionMemory(session)).toEqual([]);
 
-  afterEach(() => {
-    fs.rmSync(tempWorkdir, { recursive: true, force: true });
-  });
-
-  it("parses and renders markdown memory sections accurately", () => {
-    const raw = `# Zeuf Memory\n\n## Conventions\n- Always run bun test\n- Use strict typescript\n\n## Architecture\n- TUI is built with React Ink\n`;
-    const parsed = parseMemoryMarkdown(raw);
-
-    expect(parsed.has("Conventions")).toBe(true);
-    expect(parsed.get("Conventions")).toEqual(["Always run bun test", "Use strict typescript"]);
-    expect(parsed.has("Architecture")).toBe(true);
-    expect(parsed.get("Architecture")).toEqual(["TUI is built with React Ink"]);
-
-    const rendered = renderMemoryMarkdown(parsed, "Test Memory");
-    expect(rendered).toContain("# Test Memory");
-    expect(rendered).toContain("## Conventions");
-    expect(rendered).toContain("- Always run bun test");
-    expect(rendered).toContain("## Architecture");
-    expect(rendered).toContain("- TUI is built with React Ink");
-  });
-
-  it("adds and deduplicates memory items in project scope", () => {
-    const res1 = addMemoryItem(tempWorkdir, "Prefer bun over npm", "Conventions", "project");
+    const res1 = addChatMemory(session, "User prefers concise answers");
     expect(res1.added).toBe(true);
     expect(res1.count).toBe(1);
-
-    const memPath = getProjectMemoryPath(tempWorkdir);
-    expect(fs.existsSync(memPath)).toBe(true);
-    const content = loadMemoryFile(memPath);
-    expect(content).toContain("Prefer bun over npm");
+    expect(session.memory).toContain("User prefers concise answers");
 
     // Deduplication check
-    const res2 = addMemoryItem(tempWorkdir, "prefer bun over npm", "Conventions", "project");
+    const res2 = addChatMemory(session, "user prefers concise answers");
     expect(res2.added).toBe(false);
     expect(res2.count).toBe(1);
 
-    // Add another item under Architecture
-    const res3 = addMemoryItem(tempWorkdir, "System binary installs to ~/.local/bin/zeuf", "Architecture", "project");
+    const res3 = addChatMemory(session, "Target platform is Linux");
     expect(res3.added).toBe(true);
     expect(res3.count).toBe(2);
-
-    const updatedContent = loadMemoryFile(memPath);
-    expect(updatedContent).toContain("## Architecture");
-    expect(updatedContent).toContain("- System binary installs to ~/.local/bin/zeuf");
+    expect(session.memory?.length).toBe(2);
   });
 
-  it("removes memory items accurately", () => {
-    addMemoryItem(tempWorkdir, "Rule A to keep", "Conventions", "project");
-    addMemoryItem(tempWorkdir, "Rule B to delete", "Conventions", "project");
+  it("removes memory items from a chat session", () => {
+    const session = createMockSession();
+    addChatMemory(session, "Use TypeScript strict mode");
+    addChatMemory(session, "Target ES2022");
 
-    const removed = removeMemoryItem(tempWorkdir, "Rule B", "project");
+    const removed = removeChatMemory(session, "strict mode");
     expect(removed).toBe(true);
+    expect(session.memory).not.toContain("Use TypeScript strict mode");
+    expect(session.memory).toContain("Target ES2022");
 
-    const content = loadMemoryFile(getProjectMemoryPath(tempWorkdir));
-    expect(content).toContain("Rule A to keep");
-    expect(content).not.toContain("Rule B to delete");
-
-    const removeNonExistent = removeMemoryItem(tempWorkdir, "NonExistent", "project");
+    const removeNonExistent = removeChatMemory(session, "nonexistent");
     expect(removeNonExistent).toBe(false);
   });
 
-  it("formats memory context cleanly for system prompt", () => {
-    addMemoryItem(tempWorkdir, "Editorial theme colors #efe9dd", "Design", "project");
+  it("clears chat memory properly", () => {
+    const session = createMockSession();
+    addChatMemory(session, "Fact 1");
+    addChatMemory(session, "Fact 2");
+    expect(session.memory?.length).toBe(2);
 
-    const promptContext = formatMemoryForPrompt(tempWorkdir);
-    expect(promptContext).toContain("PERSISTENT MEMORY & PROJECT CONTEXT");
-    expect(promptContext).toContain("Editorial theme colors #efe9dd");
+    clearChatMemory(session);
+    expect(session.memory).toEqual([]);
   });
 
-  it("executes remember and forget tools via ToolRegistry", async () => {
-    const registry = new ToolRegistry(tempWorkdir, true);
+  it("formats chat memory context for system prompt", () => {
+    const session = createMockSession();
+    expect(formatChatMemoryForPrompt(session)).toBe("");
 
-    // Verify tool definitions include remember and forget
+    addChatMemory(session, "Project uses Bun runtime");
+    const promptContext = formatChatMemoryForPrompt(session);
+    expect(promptContext).toContain("CHAT MEMORY");
+    expect(promptContext).toContain("Project uses Bun runtime");
+  });
+
+  it("auto-extracts user introductions and preferences into chat session", () => {
+    const session = createMockSession();
+
+    const res1 = extractAndSaveAutoMemory(session, "hi my name is aurasobio");
+    expect(res1.remembered).toBe(true);
+    expect(res1.fact).toContain("aurasobio");
+    expect(session.memory).toContain("User's name is aurasobio");
+
+    const res2 = extractAndSaveAutoMemory(session, "remember that we deploy to Cloudflare");
+    expect(res2.remembered).toBe(true);
+    expect(res2.fact).toContain("we deploy to Cloudflare");
+    expect(session.memory).toContain("we deploy to Cloudflare");
+  });
+
+  it("ensures strict session isolation: Chat A memory does not leak into Chat B", () => {
+    const chatA = createMockSession("chat-a");
+    const chatB = createMockSession("chat-b");
+
+    addChatMemory(chatA, "Secret token for project A");
+    expect(chatA.memory).toContain("Secret token for project A");
+    expect(chatB.memory).toEqual([]);
+    expect(formatChatMemoryForPrompt(chatB)).toBe("");
+  });
+
+  it("executes remember and forget tools via ToolRegistry on active session", async () => {
+    const session = createMockSession();
+    const registry = new ToolRegistry(process.cwd(), true, undefined, session);
+
+    // Verify tool definitions
     const defs = registry.definitions();
     expect(defs.some(d => d.name === "remember")).toBe(true);
     expect(defs.some(d => d.name === "forget")).toBe(true);
@@ -106,12 +118,11 @@ describe("Zeuf Persistent Memory Layer", () => {
       "remember",
       JSON.stringify({
         fact: "All tests must pass before git push",
-        category: "Workflows",
-        scope: "project",
       })
     );
     expect(rememberRes.isError).toBe(false);
-    expect(rememberRes.content).toContain("Saved to project memory");
+    expect(rememberRes.content).toContain("Saved to chat memory");
+    expect(session.memory).toContain("All tests must pass before git push");
 
     // Execute forget tool
     const forgetRes = await registry.execute(
@@ -119,32 +130,10 @@ describe("Zeuf Persistent Memory Layer", () => {
       "forget",
       JSON.stringify({
         query: "All tests must pass",
-        scope: "project",
       })
     );
     expect(forgetRes.isError).toBe(false);
     expect(forgetRes.content).toContain("Removed memory matching");
-  });
-
-  it("clears project memory properly", () => {
-    addMemoryItem(tempWorkdir, "Temporary memory", "Conventions", "project");
-    expect(fs.existsSync(getProjectMemoryPath(tempWorkdir))).toBe(true);
-
-    clearMemory(tempWorkdir, "project");
-    const content = loadMemoryFile(getProjectMemoryPath(tempWorkdir));
-    expect(content).toBe("");
-  });
-
-  it("extracts and auto-persists user name and instructions", () => {
-    const res1 = extractAndSaveAutoMemory(tempWorkdir, "hi my name is aurasobio");
-    expect(res1.remembered).toBe(true);
-    expect(res1.fact).toContain("aurasobio");
-
-    const res2 = extractAndSaveAutoMemory(tempWorkdir, "remember that we deploy to Cloudflare");
-    expect(res2.remembered).toBe(true);
-    expect(res2.fact).toContain("we deploy to Cloudflare");
-
-    const mem = loadMemoryFile(getProjectMemoryPath(tempWorkdir));
-    expect(mem).toContain("we deploy to Cloudflare");
+    expect(session.memory?.length).toBe(0);
   });
 });

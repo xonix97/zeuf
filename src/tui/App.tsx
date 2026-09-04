@@ -16,7 +16,7 @@ import { Router } from "../providers/router";
 import { ToolRegistry } from "../tools/registry";
 import { gitStatus } from "../tools/git";
 import { generateSessionId, loadSession, saveSession } from "../core/session";
-import { loadAllMemory, addMemoryItem, removeMemoryItem } from "../core/memory";
+import { initSessionMemory, addChatMemory, removeChatMemory } from "../core/memory";
 import type { SessionData, StreamEvent, ModelInfo } from "../core/types";
 
 export interface AppBlock {
@@ -153,16 +153,12 @@ export const App: React.FC<AppProps> = ({
       return;
     }
     if (item.value === "/memory") {
-      const { project, global, itemCount } = loadAllMemory(workdir);
-      let text = `Persistent Memory (${itemCount} facts active):\n`;
-      if (project) {
-        text += `\n[Project: .zeuf/memory.md]\n${project}\n`;
-      }
-      if (global) {
-        text += `\n[Global: ~/.zeuf/memory.md]\n${global}\n`;
-      }
-      if (itemCount === 0) {
-        text = "No persistent memories saved yet.\nUse `/remember <fact>` to save project conventions or architecture rules.";
+      const mem = initSessionMemory(session);
+      let text = `Chat Memory (${mem.length} items for this chat):\n`;
+      if (mem.length > 0) {
+        text += mem.map(m => `• ${m}`).join("\n");
+      } else {
+        text = "No memories recorded for this chat session yet.\nType `/remember <fact>` to save a constraint or fact for this chat.";
       }
       setBlocks(prev => [
         ...prev,
@@ -236,15 +232,17 @@ export const App: React.FC<AppProps> = ({
     if (text.startsWith("/remember ")) {
       const fact = text.slice(10).trim();
       if (fact) {
-        const res = addMemoryItem(workdir, fact, "Conventions", "project");
+        const res = addChatMemory(session, fact);
+        setSession({ ...session });
+        saveSession(session);
         setBlocks(prev => [
           ...prev,
           {
             id: String(Date.now()),
             type: "system",
             text: res.added
-              ? `✓ Saved to project memory (.zeuf/memory.md): "${fact}"`
-              : `Fact already recorded in project memory: "${fact}"`,
+              ? `✓ Saved to this chat's memory: "${fact}"`
+              : `Fact already recorded in this chat: "${fact}"`,
           },
         ]);
         return;
@@ -254,15 +252,17 @@ export const App: React.FC<AppProps> = ({
     if (text.startsWith("/forget ")) {
       const query = text.slice(8).trim();
       if (query) {
-        const removed = removeMemoryItem(workdir, query, "project");
+        const removed = removeChatMemory(session, query);
+        setSession({ ...session });
+        saveSession(session);
         setBlocks(prev => [
           ...prev,
           {
             id: String(Date.now()),
             type: "system",
             text: removed
-              ? `✓ Removed from project memory: "${query}"`
-              : `No memory found matching: "${query}"`,
+              ? `✓ Removed from this chat's memory: "${query}"`
+              : `No memory found matching: "${query}" in this chat`,
           },
         ]);
         return;

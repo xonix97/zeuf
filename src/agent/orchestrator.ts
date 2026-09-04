@@ -3,7 +3,7 @@ import type { ToolRegistry } from "../tools/registry";
 import type { SessionData, StreamEvent, Message } from "../core/types";
 import { ConversationContext } from "./context";
 import { gitStatus } from "../tools/git";
-import { formatMemoryForPrompt, extractAndSaveAutoMemory } from "../core/memory";
+import { formatChatMemoryForPrompt, extractAndSaveAutoMemory } from "../core/memory";
 
 export function isConversational(task: string): boolean {
   const lower = task.trim().toLowerCase().replace(/[!?. ]+$/, "");
@@ -60,9 +60,12 @@ export class Orchestrator {
   ): Promise<string> {
     const taskTrim = task.trim();
 
-    // Auto-extract and persist memory (e.g. user identity, preferences, conventions)
-    extractAndSaveAutoMemory(this.tools.workdir, taskTrim);
-    const memoryPrompt = formatMemoryForPrompt(this.tools.workdir);
+    // Bind current chat session to tools so remember/forget operate on this chat
+    this.tools.setSession(session);
+
+    // Auto-extract and persist memory strictly for THIS chat session
+    extractAndSaveAutoMemory(session, taskTrim);
+    const memoryPrompt = formatChatMemoryForPrompt(session);
 
     // 1. Conversational Fast-Path
     if (isConversational(taskTrim)) {
