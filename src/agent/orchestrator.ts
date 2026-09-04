@@ -1,9 +1,9 @@
 import type { Router } from "../providers/router";
 import type { ToolRegistry } from "../tools/registry";
-import type { SessionData, StreamEvent } from "../core/types";
+import type { SessionData, StreamEvent, Message } from "../core/types";
 import { ConversationContext } from "./context";
 import { gitStatus } from "../tools/git";
-import { formatMemoryForPrompt } from "../core/memory";
+import { formatMemoryForPrompt, extractAndSaveAutoMemory } from "../core/memory";
 
 export function isConversational(task: string): boolean {
   const lower = task.trim().toLowerCase().replace(/[!?. ]+$/, "");
@@ -25,8 +25,20 @@ export function isConversational(task: string): boolean {
     case "show memory":
     case "what do you remember":
     case "what do you know":
+    case "whats my name":
+    case "what is my name":
+    case "who am i":
+    case "who is this":
+    case "tell me what you remember":
+    case "do you remember me":
       return true;
     default:
+      if (lower.startsWith("hi ") || lower.startsWith("hello ") || lower.startsWith("hey ")) {
+        return true;
+      }
+      if (lower.startsWith("my name is ") || lower.startsWith("i am ") || lower.startsWith("call me ")) {
+        return true;
+      }
       return false;
   }
 }
@@ -47,20 +59,34 @@ export class Orchestrator {
     pinnedModel?: string
   ): Promise<string> {
     const taskTrim = task.trim();
+
+    // Auto-extract and persist memory (e.g. user identity, preferences, conventions)
+    extractAndSaveAutoMemory(this.tools.workdir, taskTrim);
     const memoryPrompt = formatMemoryForPrompt(this.tools.workdir);
 
     // 1. Conversational Fast-Path
     if (isConversational(taskTrim)) {
       onEvent({ type: "phase", phase: "conversational" });
+
+      const convMessages: Message[] = [
+        {
+          role: "system" as const,
+          content: `You are Zeuf, a fast, reliable, developer-focused autonomous coding agent.
+Respond warmly, concisely, and helpfully.
+${memoryPrompt ? `\n${memoryPrompt}\n` : ""}`,
+        },
+      ];
+
+      for (const m of session.messages) {
+        if (m.role !== "system") {
+          convMessages.push(m);
+        }
+      }
+      convMessages.push({ role: "user", content: taskTrim });
+
       const req = {
         model: pinnedModel || "auto",
-        messages: [
-          {
-            role: "system" as const,
-            content: `You are Zeuf, a fast, reliable, developer-focused agentic coding assistant. Respond warmly, concisely, and helpfully.${memoryPrompt ? `\n\n${memoryPrompt}` : ""}`,
-          },
-          { role: "user" as const, content: taskTrim },
-        ],
+        messages: convMessages,
       };
 
       const { response, model } = await this.router.executeWithFallback(

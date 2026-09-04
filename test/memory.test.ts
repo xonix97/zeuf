@@ -12,6 +12,7 @@ import {
   loadAllMemory,
   formatMemoryForPrompt,
   getProjectMemoryPath,
+  extractAndSaveAutoMemory,
 } from "../src/core/memory";
 import { ToolRegistry } from "../src/tools/registry";
 
@@ -132,5 +133,18 @@ describe("Zeuf Persistent Memory Layer", () => {
     clearMemory(tempWorkdir, "project");
     const content = loadMemoryFile(getProjectMemoryPath(tempWorkdir));
     expect(content).toBe("");
+  });
+
+  it("extracts and auto-persists user name and instructions", () => {
+    const res1 = extractAndSaveAutoMemory(tempWorkdir, "hi my name is aurasobio");
+    expect(res1.remembered).toBe(true);
+    expect(res1.fact).toContain("aurasobio");
+
+    const res2 = extractAndSaveAutoMemory(tempWorkdir, "remember that we deploy to Cloudflare");
+    expect(res2.remembered).toBe(true);
+    expect(res2.fact).toContain("we deploy to Cloudflare");
+
+    const mem = loadMemoryFile(getProjectMemoryPath(tempWorkdir));
+    expect(mem).toContain("we deploy to Cloudflare");
   });
 });

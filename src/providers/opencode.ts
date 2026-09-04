@@ -209,10 +209,32 @@ export class OpenCodeProvider implements Provider {
   }
 
   private formatMessages(req: ChatRequest): string {
-    const lastUser = req.messages.filter(m => m.role === "user").pop();
-    if (lastUser) {
-      return lastUser.content;
+    const parts: string[] = [];
+
+    // 1. System prompt & persistent memory
+    const systemMsgs = req.messages.filter(m => m.role === "system");
+    if (systemMsgs.length > 0) {
+      parts.push(systemMsgs.map(m => m.content).join("\n\n"));
     }
-    return req.messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
+
+    // 2. Tools documentation if provided
+    if (req.tools && req.tools.length > 0) {
+      const toolDocs = req.tools.map(t => `- ${t.name}: ${t.description}`).join("\n");
+      parts.push(`AVAILABLE TOOLS:\n${toolDocs}`);
+    }
+
+    // 3. Conversation turns
+    const convMsgs = req.messages.filter(m => m.role !== "system");
+    if (convMsgs.length > 0) {
+      const formatted = convMsgs.map(m => {
+        if (m.role === "user") return `User: ${m.content}`;
+        if (m.role === "assistant") return `Assistant: ${m.content}`;
+        if (m.role === "tool") return `Tool Result (${m.name}): ${m.content}`;
+        return `${m.role}: ${m.content}`;
+      }).join("\n\n");
+      parts.push(formatted);
+    }
+
+    return parts.join("\n\n---\n\n");
   }
 }

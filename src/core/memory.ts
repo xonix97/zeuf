@@ -227,3 +227,60 @@ export function formatMemoryForPrompt(workdir: string = process.cwd()): string {
 
   return `PERSISTENT MEMORY & PROJECT CONTEXT (Rules, conventions, and facts learned across sessions):\n${combined}`;
 }
+
+/**
+ * Auto-detect user introductions, explicit remember instructions, and preferences,
+ * and immediately persist them into memory.
+ */
+export function extractAndSaveAutoMemory(
+  workdir: string,
+  text: string
+): { remembered: boolean; fact?: string; scope?: MemoryScope } {
+  const trimmed = text.trim();
+
+  // 1. "my name is <name>" / "call me <name>" / "i am <name>"
+  const nameMatch = trimmed.match(
+    /(?:(?:hi|hello|hey|yo)[, ]+)?(?:my name is|i am|i'm|call me)\s+([a-zA-Z0-9_\- ]+?)(?:[.!,]|$)/i
+  );
+  if (nameMatch && nameMatch[1]) {
+    const rawName = nameMatch[1].trim();
+    const blacklist = [
+      "a developer",
+      "an engineer",
+      "here",
+      "ready",
+      "building",
+      "coding",
+      "testing",
+      "working",
+      "fine",
+      "good",
+    ];
+    if (!blacklist.includes(rawName.toLowerCase()) && rawName.length > 1 && rawName.length < 35) {
+      const fact = `User's name is ${rawName}`;
+      addMemoryItem(workdir, fact, "User Preferences", "global");
+      return { remembered: true, fact, scope: "global" };
+    }
+  }
+
+  // 2. "remember that <X>" or "remember to <X>" or "remember <X>"
+  const rememberMatch = trimmed.match(/^remember(?:\s+that|\s+to)?\s+([^.!?]+)/i);
+  if (rememberMatch && rememberMatch[1]) {
+    const fact = rememberMatch[1].trim();
+    if (fact.length > 3) {
+      addMemoryItem(workdir, fact, "User Preferences", "project");
+      return { remembered: true, fact, scope: "project" };
+    }
+  }
+
+  // 3. "always use <X>" or "i prefer <X>"
+  const prefMatch = trimmed.match(/^(?:always use|i prefer|prefer)\s+([^.!?]+)/i);
+  if (prefMatch && prefMatch[1]) {
+    const fact = trimmed.replace(/[.!]+$/, "").trim();
+    addMemoryItem(workdir, fact, "Conventions", "project");
+    return { remembered: true, fact, scope: "project" };
+  }
+
+  return { remembered: false };
+}
+

@@ -10,6 +10,11 @@ describe("Zeuf Agent Orchestrator", () => {
     expect(isConversational("who are you")).toBe(true);
     expect(isConversational("what can you do?")).toBe(true);
     expect(isConversational("ping")).toBe(true);
+    expect(isConversational("whats my name")).toBe(true);
+    expect(isConversational("what is my name?")).toBe(true);
+    expect(isConversational("who am i")).toBe(true);
+    expect(isConversational("hi my name is aurasobio")).toBe(true);
+    expect(isConversational("my name is bob")).toBe(true);
 
     // Coding and complex tasks should NOT trigger conversational fast-path
     expect(isConversational("refactor the auth module")).toBe(false);
