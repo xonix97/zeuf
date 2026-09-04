@@ -62,6 +62,7 @@ const (
 	EvVerifyStart EventType = "verify_start"
 	EvVerifyEnd   EventType = "verify_end"
 	EvDiff        EventType = "diff"
+	EvNotice      EventType = "notice"
 )
 
 // Agent drives turns over a router and a tool registry.

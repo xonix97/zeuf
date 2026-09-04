@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"zeuf/internal/core"
@@ -122,5 +124,87 @@ func TestIngestRepairTaskRewiresDependencies(t *testing.T) {
 	// Graph must remain valid DAG
 	if err := g.Validate(); err != nil {
 		t.Fatalf("graph invalid after repair ingestion: %v", err)
+	}
+}
+
+func TestDiscoveryNoPackageJsonTestScript(t *testing.T) {
+	dir := t.TempDir()
+	// package.json without scripts.test
+	pkgJSON := `{"name": "test-pkg", "dependencies": {"express": "^4.18.2"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := &Evidence{}
+	detectBuildSystem(dir, ev)
+	if ev.BuildSystem != "Node.js (npm)" {
+		t.Errorf("expected Node.js build system, got %q", ev.BuildSystem)
+	}
+	if ev.TestCommand != "" {
+		t.Errorf("expected empty TestCommand when no test script is configured, got %q", ev.TestCommand)
+	}
+}
+
+func TestUnconfiguredTestFailureDetection(t *testing.T) {
+	cases := []struct {
+		output   string
+		expected bool
+	}{
+		{`npm error Missing script: "test"`, true},
+		{`npm error Missing script: 'test'`, true},
+		{`Error: no test specified`, true},
+		{`make: *** No rule to make target 'test'. Stop.`, true},
+		{`bash: pytest: command not found`, true},
+		{`--- FAIL: TestAuth (0.01s)`, false},
+		{`syntax error: unexpected token`, false},
+	}
+
+	for _, c := range cases {
+		got := isUnconfiguredTestFailure(c.output)
+		if got != c.expected {
+			t.Errorf("isUnconfiguredTestFailure(%q) = %v, want %v", c.output, got, c.expected)
+		}
+	}
+}
+
+func TestNonCodeTaskSkipsRepoTest(t *testing.T) {
+	orch := &Orchestrator{
+		Graph: NewTaskGraph("create dir"),
+	}
+	orch.Graph.AddTask(&Task{
+		ID:           "T1",
+		Title:        "Create tiki2 directory",
+		Verification: "ls -la /tmp/tiki2",
+	})
+
+	ev := &Evidence{TestCommand: "npm test"}
+	sess := &Session2{
+		Session: &core.Session{},
+	}
+
+	// 1. With task-specific verification, repo-level TestCommand is NOT appended
+	cmds := orch.collectVerificationCommands(ev, sess)
+	if len(cmds) != 1 || cmds[0] != "ls -la /tmp/tiki2" {
+		t.Errorf("expected only task verification, got %v", cmds)
+	}
+
+	// 2. Even with no task-specific verification, if no code files were modified, TestCommand is skipped
+	orch2 := &Orchestrator{
+		Graph: NewTaskGraph("read query"),
+	}
+	orch2.Graph.AddTask(&Task{
+		ID:    "T1",
+		Title: "Explain code",
+	})
+	cmds2 := orch2.collectVerificationCommands(ev, sess)
+	if len(cmds2) != 0 {
+		t.Errorf("expected empty verification for non-code task, got %v", cmds2)
+	}
+
+	// 3. When code files ARE modified and no verification command is set, TestCommand is included
+	sess.Session.NoteModifiedFile("pkg/api/server.go")
+	cmds3 := orch2.collectVerificationCommands(ev, sess)
+	if len(cmds3) != 1 || cmds3[0] != "npm test" {
+		t.Errorf("expected repo test for modified code, got %v", cmds3)
 	}
 }

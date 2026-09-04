@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -190,7 +191,7 @@ func (o *Orchestrator) Execute(ctx context.Context, sess *Session2, prefs router
 	o.StateMachine.TransitionTo(StateVerification, "running verification checks")
 
 	var verificationResults []core.VerificationResult
-	testCommands := o.collectVerificationCommands(ev)
+	testCommands := o.collectVerificationCommands(ev, sess)
 
 	for _, cmd := range testCommands {
 		o.emit(Event{
@@ -221,6 +222,15 @@ func (o *Orchestrator) Execute(ctx context.Context, sess *Session2, prefs router
 
 		// Self-repair loop on verification failure
 		if !vr.Passed {
+			// Do not attempt code repair if the test runner or script is not configured in the project
+			if isUnconfiguredTestFailure(vr.Stderr + " " + vr.FailureDiagnosis + " " + vr.Stdout) {
+				o.emit(Event{
+					Type: EvNotice,
+					Text: fmt.Sprintf("Skipping repair: verification command %q is unconfigured in project", cmd),
+				})
+				continue
+			}
+
 			repairSuccess := o.attemptRepair(ctx, sess, prefs, vr)
 			if !repairSuccess {
 				// Record failed verification honestly
@@ -376,6 +386,37 @@ func (o *Orchestrator) executeDirect(ctx context.Context, task *Task, sess *Sess
 	return last, nil
 }
 
+func isCodeFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".go", ".rs", ".py", ".js", ".ts", ".tsx", ".jsx",
+		".c", ".cpp", ".cc", ".h", ".hpp", ".java", ".rb",
+		".php", ".cs", ".swift", ".kt", ".scala", ".zig":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasModifiedCode(modified []string) bool {
+	for _, p := range modified {
+		if isCodeFile(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnconfiguredTestFailure(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "missing script:") ||
+		strings.Contains(lower, "no test specified") ||
+		strings.Contains(lower, "no rule to make target 'test'") ||
+		strings.Contains(lower, "no rule to make target `test`") ||
+		strings.Contains(lower, "command not found") ||
+		strings.Contains(lower, "executable file not found")
+}
+
 func (o *Orchestrator) attemptRepair(ctx context.Context, sess *Session2, prefs router.Prefs, vr *core.VerificationResult) bool {
 	o.StateMachine.TransitionTo(StateReplan, "creating bounded repair task for failure")
 
@@ -390,7 +431,29 @@ func (o *Orchestrator) attemptRepair(ctx context.Context, sess *Session2, prefs 
 		return false
 	}
 
-	repairTask, err := CreateRepairTask(targetTask, vr, sess.Session.ModifiedFiles)
+	// Identify root task if targetTask is already a repair
+	rootID := targetTask.ID
+	if idx := strings.Index(rootID, "-R"); idx != -1 {
+		rootID = rootID[:idx]
+	}
+	rootTask := o.Graph.Tasks[rootID]
+	if rootTask == nil {
+		rootTask = targetTask
+	}
+
+	maxAttempts := rootTask.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	if rootTask.AttemptCount >= maxAttempts {
+		o.emit(Event{
+			Type: EvNotice,
+			Text: fmt.Sprintf("Repair limit reached for task %s (%d/%d attempts)", rootTask.ID, rootTask.AttemptCount, maxAttempts),
+		})
+		return false
+	}
+
+	repairTask, err := CreateRepairTask(rootTask, vr, sess.Session.ModifiedFiles)
 	if err != nil {
 		o.emit(Event{
 			Type: EvError,
@@ -398,6 +461,7 @@ func (o *Orchestrator) attemptRepair(ctx context.Context, sess *Session2, prefs 
 		})
 		return false
 	}
+	rootTask.AttemptCount++
 
 	o.emit(Event{
 		Type:   EvPhase,
@@ -406,7 +470,7 @@ func (o *Orchestrator) attemptRepair(ctx context.Context, sess *Session2, prefs 
 		Text:   fmt.Sprintf("Created repair task [%s] to fix verification failure", repairTask.ID),
 	})
 
-	if err := IngestRepairTask(o.Graph, targetTask, repairTask); err != nil {
+	if err := IngestRepairTask(o.Graph, rootTask, repairTask); err != nil {
 		return false
 	}
 
@@ -422,7 +486,7 @@ func (o *Orchestrator) attemptRepair(ctx context.Context, sess *Session2, prefs 
 	return true
 }
 
-func (o *Orchestrator) collectVerificationCommands(ev *Evidence) []string {
+func (o *Orchestrator) collectVerificationCommands(ev *Evidence, sess *Session2) []string {
 	var cmds []string
 	seen := make(map[string]bool)
 
@@ -435,10 +499,13 @@ func (o *Orchestrator) collectVerificationCommands(ev *Evidence) []string {
 		}
 	}
 
-	// Add repository-level test command if discovered
+	// Add repository-level test command ONLY IF:
+	// 1. No task-specific verification was defined AND code files were modified
 	if ev != nil && ev.TestCommand != "" && !seen[ev.TestCommand] {
-		seen[ev.TestCommand] = true
-		cmds = append(cmds, ev.TestCommand)
+		if len(cmds) == 0 && sess != nil && hasModifiedCode(sess.Session.ModifiedFiles) {
+			seen[ev.TestCommand] = true
+			cmds = append(cmds, ev.TestCommand)
+		}
 	}
 
 	return cmds
@@ -474,7 +541,12 @@ func (o *Orchestrator) synthesizeFinalResponse(
 ) string {
 	var b strings.Builder
 	latestStatus := make(map[string]bool)
+	unconfiguredMap := make(map[string]bool)
 	for _, v := range verifications {
+		if isUnconfiguredTestFailure(v.Stderr + " " + v.FailureDiagnosis + " " + v.Stdout) {
+			unconfiguredMap[v.Command] = true
+			continue
+		}
 		latestStatus[v.Command] = v.Passed
 	}
 	allPassed := true
@@ -511,6 +583,10 @@ func (o *Orchestrator) synthesizeFinalResponse(
 	if len(verifications) > 0 {
 		b.WriteString("#### Verification Results\n")
 		for _, v := range verifications {
+			if unconfiguredMap[v.Command] {
+				fmt.Fprintf(&b, "- `%s` — ⚠ SKIPPED (not configured in project)\n", v.Command)
+				continue
+			}
 			mark := "✓ PASSED"
 			if !v.Passed {
 				mark = fmt.Sprintf("✗ FAILED (exit code %d)", v.ExitCode)

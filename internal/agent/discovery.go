@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -104,16 +105,86 @@ func inspectGit(ctx context.Context, workdir string) (branch string, dirty []str
 
 func detectBuildSystem(workdir string, ev *Evidence) {
 	checks := []struct {
-		file   string
-		system string
-		test   string
+		file       string
+		system     string
+		detectTest func(path string) string
 	}{
-		{"go.mod", "Go", "go test ./..."},
-		{"package.json", "Node.js (npm)", "npm test"},
-		{"Cargo.toml", "Rust (Cargo)", "cargo test"},
-		{"pyproject.toml", "Python", "pytest"},
-		{"pytest.ini", "Python (pytest)", "pytest"},
-		{"Makefile", "Make", "make test"},
+		{
+			file:   "go.mod",
+			system: "Go",
+			detectTest: func(path string) string {
+				return "go test ./..."
+			},
+		},
+		{
+			file:   "package.json",
+			system: "Node.js (npm)",
+			detectTest: func(path string) string {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return ""
+				}
+				var pj struct {
+					Scripts map[string]string `json:"scripts"`
+				}
+				if err := json.Unmarshal(data, &pj); err != nil {
+					return ""
+				}
+				testScript, ok := pj.Scripts["test"]
+				if !ok || strings.TrimSpace(testScript) == "" {
+					return ""
+				}
+				if strings.Contains(strings.ToLower(testScript), "no test specified") {
+					return ""
+				}
+				return "npm test"
+			},
+		},
+		{
+			file:   "Cargo.toml",
+			system: "Rust (Cargo)",
+			detectTest: func(path string) string {
+				return "cargo test"
+			},
+		},
+		{
+			file:   "pytest.ini",
+			system: "Python (pytest)",
+			detectTest: func(path string) string {
+				return "pytest"
+			},
+		},
+		{
+			file:   "pyproject.toml",
+			system: "Python",
+			detectTest: func(path string) string {
+				data, err := os.ReadFile(path)
+				if err == nil && (strings.Contains(string(data), "[tool.pytest") || strings.Contains(string(data), "pytest")) {
+					return "pytest"
+				}
+				if _, err := os.Stat(filepath.Join(workdir, "tests")); err == nil {
+					return "pytest"
+				}
+				return ""
+			},
+		},
+		{
+			file:   "Makefile",
+			system: "Make",
+			detectTest: func(path string) string {
+				data, err := os.ReadFile(path)
+				if err == nil {
+					lines := strings.Split(string(data), "\n")
+					for _, line := range lines {
+						trimmed := strings.TrimSpace(line)
+						if strings.HasPrefix(trimmed, "test:") || strings.HasPrefix(trimmed, "test :") {
+							return "make test"
+						}
+					}
+				}
+				return ""
+			},
+		},
 	}
 
 	for _, c := range checks {
@@ -122,7 +193,9 @@ func detectBuildSystem(workdir string, ev *Evidence) {
 			ev.KeyFiles = append(ev.KeyFiles, c.file)
 			if ev.BuildSystem == "" {
 				ev.BuildSystem = c.system
-				ev.TestCommand = c.test
+				if c.detectTest != nil {
+					ev.TestCommand = c.detectTest(p)
+				}
 			}
 		}
 	}

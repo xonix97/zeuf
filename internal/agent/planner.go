@@ -72,11 +72,23 @@ func (p *Planner) Plan(ctx context.Context, in PlanInput) (*TaskGraph, error) {
 }
 
 func isSimpleTask(task string) bool {
-	lower := strings.ToLower(task)
+	lower := strings.ToLower(strings.TrimSpace(task))
+	// Casual greetings / simple replies
+	if lower == "hi" || lower == "hello" || lower == "hey" || lower == "yo" || lower == "ping" || lower == "help" {
+		return true
+	}
 	// Query / explanation
 	if strings.HasPrefix(lower, "what ") || strings.HasPrefix(lower, "how ") ||
 		strings.HasPrefix(lower, "explain ") || strings.HasPrefix(lower, "where ") ||
-		strings.HasPrefix(lower, "why ") {
+		strings.HasPrefix(lower, "why ") || strings.HasPrefix(lower, "who ") ||
+		strings.HasPrefix(lower, "can you explain") || strings.HasPrefix(lower, "tell me") {
+		return true
+	}
+	// Pure filesystem operations: mkdir, touch, create dir, etc.
+	if strings.Contains(lower, "mkdir") || strings.Contains(lower, "make a dir") ||
+		strings.Contains(lower, "make a new dir") || strings.Contains(lower, "create a dir") ||
+		strings.Contains(lower, "create directory") || strings.Contains(lower, "new dir") ||
+		strings.Contains(lower, "create folder") || strings.Contains(lower, "new folder") {
 		return true
 	}
 	// Short inspection / quick single-file fix
@@ -92,6 +104,36 @@ func buildFastPathGraph(task string, ev *Evidence) *TaskGraph {
 	testCmd := ""
 	if ev != nil {
 		testCmd = ev.TestCommand
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(task))
+
+	// Pure filesystem operations: creating directories or files
+	if strings.Contains(lower, "mkdir") || strings.Contains(lower, "make a dir") ||
+		strings.Contains(lower, "make a new dir") || strings.Contains(lower, "create a dir") ||
+		strings.Contains(lower, "create directory") || strings.Contains(lower, "new dir") ||
+		strings.Contains(lower, "create folder") || strings.Contains(lower, "new folder") {
+		g.AddTask(&Task{
+			ID:            "T1",
+			Title:         "Implement filesystem change",
+			Description:   task,
+			AssignedAgent: "implementer",
+			RequiredTools: []string{"bash", "write", "read"},
+			Status:        TaskReady,
+		})
+		return g
+	}
+
+	// Pure casual greetings / ping
+	if lower == "hi" || lower == "hello" || lower == "hey" || lower == "yo" || lower == "ping" {
+		g.AddTask(&Task{
+			ID:            "T1",
+			Title:         "Respond to user",
+			Description:   task,
+			AssignedAgent: "orchestrator",
+			Status:        TaskReady,
+		})
+		return g
 	}
 
 	// T1: Inspect / locate
@@ -163,17 +205,19 @@ func buildDeterministicPlan(task string, ev *Evidence) *TaskGraph {
 		Verification:  testCmd,
 	})
 
-	// T3: Verification & test
-	g.AddTask(&Task{
-		ID:            "T3",
-		Title:         "Verify changes",
-		Description:   "Run test suite and verify no regressions",
-		AssignedAgent: "tester",
-		Dependencies:  []string{"T2"},
-		RequiredTools: []string{"bash"},
-		Status:        TaskPending,
-		Verification:  testCmd,
-	})
+	// T3: Verification & test (only when a real test command is discovered)
+	if testCmd != "" {
+		g.AddTask(&Task{
+			ID:            "T3",
+			Title:         "Verify changes",
+			Description:   "Run test suite and verify no regressions",
+			AssignedAgent: "tester",
+			Dependencies:  []string{"T2"},
+			RequiredTools: []string{"bash"},
+			Status:        TaskPending,
+			Verification:  testCmd,
+		})
+	}
 	return g
 }
 
