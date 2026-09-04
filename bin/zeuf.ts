@@ -2,7 +2,7 @@
 import { Router } from "../src/providers/router";
 import { ToolRegistry } from "../src/tools/registry";
 import { Orchestrator } from "../src/agent/orchestrator";
-import { TUIApp } from "../src/tui/app";
+import { runTUI } from "../src/tui/index";
 import { listSessions, generateSessionId } from "../src/core/session";
 import { theme } from "../src/tui/theme";
 import type { StreamEvent } from "../src/core/types";
@@ -156,9 +156,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // 5. Interactive Full-Screen TUI
-  const app = new TUIApp(process.cwd(), autoApprove);
-  await app.start();
+  // 5. Interactive Full-Screen React Ink TUI
+  await runTUI(process.cwd(), autoApprove);
 }
 
 main().catch(err => {
