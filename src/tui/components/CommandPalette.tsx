@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import SelectInput from "ink-select-input";
+import { editorial } from "../editorialTheme";
 
 export interface CommandItem {
   label: string;
@@ -8,13 +9,13 @@ export interface CommandItem {
 }
 
 export const defaultCommands: CommandItem[] = [
-  { label: "󰘧 /models    - List and switch available AI models", value: "/models" },
-  { label: "⚡ /connect   - Configure model backends (Ollama, OpenRouter)", value: "/connect" },
-  { label: "🧹 /clear     - Clear current conversation viewport", value: "/clear" },
-  { label: "📂 /sessions  - Browse and restore saved agent sessions", value: "/sessions" },
-  { label: "📊 /status    - Inspect workspace, git diffs & tokens", value: "/status" },
-  { label: "❓ /help      - Show keyboard shortcuts & command cheat-sheet", value: "/help" },
-  { label: "🚪 /exit      - Quit Zeuf", value: "/exit" },
+  { label: "01  /models    — List and switch available AI models", value: "/models" },
+  { label: "02  /connect   — Configure backends (Ollama localhost:11434, OpenRouter)", value: "/connect" },
+  { label: "03  /clear     — Clear conversation viewport", value: "/clear" },
+  { label: "04  /sessions  — Browse and restore saved agent sessions", value: "/sessions" },
+  { label: "05  /status    — Inspect workspace, git diffs & tokens", value: "/status" },
+  { label: "06  /help      — Show keyboard shortcuts & command cheat-sheet", value: "/help" },
+  { label: "07  /exit      — Quit Zeuf", value: "/exit" },
 ];
 
 export interface CommandPaletteProps {
@@ -31,17 +32,17 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ filter, onSelect
   return (
     <Box
       borderStyle="round"
-      borderColor="cyan"
+      borderColor={editorial.cream}
       flexDirection="column"
       paddingX={1}
       marginY={1}
     >
       <Box justifyContent="space-between" marginBottom={1}>
-        <Text bold color="cyan">◈ COMMAND PALETTE</Text>
-        <Text color="gray">[↑↓: Select | Enter: Run | Esc: Dismiss]</Text>
+        <Text bold backgroundColor={editorial.paper} color={editorial.ink}> 01 — COMMAND PALETTE </Text>
+        <Text color={editorial.creamMute}>[↑↓: Select | Enter: Run | Esc: Dismiss]</Text>
       </Box>
       {filtered.length === 0 ? (
-        <Text color="gray">No matching commands</Text>
+        <Text color={editorial.creamMute}>No matching commands</Text>
       ) : (
         <SelectInput items={filtered} onSelect={onSelect} />
       )}

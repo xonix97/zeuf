@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
+import { editorial } from "../editorialTheme";
 
 export interface ToolCardProps {
   toolName: string;
@@ -19,8 +20,7 @@ export const ToolCard: React.FC<ToolCardProps> = ({
 }) => {
   const isRunning = toolOk === undefined;
   const isSuccess = toolOk === true;
-  const borderColor = isRunning ? "yellow" : isSuccess ? "green" : "red";
-  const statusText = isRunning ? "RUNNING" : isSuccess ? "SUCCESS" : "FAILED";
+  const borderColor = isRunning ? editorial.gold : isSuccess ? editorial.line2 : editorial.rust;
   const icon = isRunning ? null : isSuccess ? "✓" : "✗";
 
   return (
@@ -34,25 +34,33 @@ export const ToolCard: React.FC<ToolCardProps> = ({
       <Box justifyContent="space-between">
         <Box gap={1}>
           {isRunning ? (
-            <Text color="yellow"><Spinner type="dots" /></Text>
+            <Text color={editorial.gold}><Spinner type="dots" /></Text>
           ) : (
-            <Text bold color={borderColor}>{icon}</Text>
+            <Text bold color={isSuccess ? editorial.sage : editorial.rust}>{icon}</Text>
           )}
-          <Text bold color={borderColor}>{toolName}</Text>
-          {durationMs !== undefined && <Text color="gray">({durationMs}ms)</Text>}
+          <Text bold color={editorial.cream}>{toolName}</Text>
+          {durationMs !== undefined && <Text color={editorial.creamMute}>({durationMs}ms)</Text>}
         </Box>
-        <Text bold color={borderColor}>[{statusText}]</Text>
+        {isRunning && (
+          <Text bold backgroundColor={editorial.line2} color={editorial.gold}> EXECUTING </Text>
+        )}
+        {isSuccess && (
+          <Text bold backgroundColor="#1a2215" color={editorial.sage}> COMPLETE </Text>
+        )}
+        {toolOk === false && (
+          <Text bold backgroundColor="#281410" color={editorial.rust}> FAILED </Text>
+        )}
       </Box>
 
       {args && (
         <Box marginTop={1}>
-          <Text color="gray">args: {args.slice(0, 100)}</Text>
+          <Text color={editorial.creamDim}>args: {args.slice(0, 120)}</Text>
         </Box>
       )}
 
       {output && output.trim() && (
         <Box marginTop={1}>
-          <Text color="gray">{output.slice(0, 200)}</Text>
+          <Text color={editorial.creamMute}>{output.slice(0, 240)}</Text>
         </Box>
       )}
     </Box>

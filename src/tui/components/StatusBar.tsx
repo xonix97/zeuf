@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
+import { editorial } from "../editorialTheme";
 
 export interface StatusBarProps {
   model: string;
@@ -23,26 +24,26 @@ export const StatusBar: React.FC<StatusBarProps> = ({
       borderLeft={false}
       borderRight={false}
       borderBottom={false}
-      borderColor="gray"
+      borderColor={editorial.line}
       paddingX={1}
       justifyContent="space-between"
     >
       <Box gap={1}>
-        <Text bold backgroundColor="#005f87" color="white"> ◈ ZEUF </Text>
-        <Text bold backgroundColor="#333333" color="cyan"> 󰚩 {modelShort} </Text>
+        <Text bold backgroundColor={editorial.paper} color={editorial.ink}> zeuf. </Text>
+        <Text bold backgroundColor={editorial.surface2} color={editorial.creamSoft}> {modelShort} </Text>
         {busy ? (
           <Box gap={1}>
-            <Text color="yellow"><Spinner type="dots" /></Text>
-            <Text bold color="yellow">WORKING</Text>
+            <Text color={editorial.gold}><Spinner type="dots" /></Text>
+            <Text bold color={editorial.gold}>WORKING</Text>
           </Box>
         ) : (
-          <Text bold color="green">● READY</Text>
+          <Text bold color={editorial.sage}>● READY</Text>
         )}
       </Box>
       <Box gap={2}>
-        {branch && <Text color="yellow">⎇ {branch}</Text>}
-        {tokens > 0 && <Text color="gray">{tokens} tok</Text>}
-        <Text color="gray">^P models | / help</Text>
+        {branch && <Text color={editorial.gold}>⎇ {branch}</Text>}
+        {tokens > 0 && <Text color={editorial.creamMute}>{tokens} tok</Text>}
+        <Text color={editorial.creamMute}>^P models  │  / help</Text>
       </Box>
     </Box>
   );

@@ -15,19 +15,19 @@ describe("Zeuf React Ink Components", () => {
       <Header workdir="/home/archlinux/zeuf" branch="master" model="opencode/big-pickle" />
     );
     const frame = lastFrame();
-    expect(frame).toContain("ZEUF ARCHITECT");
+    expect(frame).toContain("zeuf.");
     expect(frame).toContain("master");
     unmount();
   });
 
-  it("renders HeroBanner with capability and shortcut cards", () => {
+  it("renders HeroBanner with manifest and shortcut cards", () => {
     const { unmount, lastFrame } = render(
       <HeroBanner model="opencode/big-pickle" branch="master" />
     );
     const frame = lastFrame();
-    expect(frame).toContain("Z E U F");
-    expect(frame).toContain("Capabilities");
-    expect(frame).toContain("Shortcuts");
+    expect(frame).toContain("z  e  u  f  .");
+    expect(frame).toContain("MANIFEST");
+    expect(frame).toContain("SHORTCUTS");
     unmount();
   });
 
@@ -39,9 +39,9 @@ describe("Zeuf React Ink Components", () => {
       </>
     );
     const frame = lastFrame();
-    expect(frame).toContain("You");
+    expect(frame).toContain("YOU");
     expect(frame).toContain("Hello world");
-    expect(frame).toContain("Zeuf");
+    expect(frame).toContain("zeuf.");
     expect(frame).toContain("Hello from Zeuf");
     unmount();
   });
@@ -56,7 +56,7 @@ describe("Zeuf React Ink Components", () => {
     const frame = lastFrame();
     expect(frame).toContain("Thought for 1.2s");
     expect(frame).toContain("bash");
-    expect(frame).toContain("SUCCESS");
+    expect(frame).toContain("COMPLETE");
     unmount();
   });
 
@@ -75,7 +75,7 @@ describe("Zeuf React Ink Components", () => {
       <StatusBar model="opencode/big-pickle" busy={false} branch="master" tokens={150} />
     );
     const frame = lastFrame();
-    expect(frame).toContain("ZEUF");
+    expect(frame).toContain("zeuf.");
     expect(frame).toContain("READY");
     expect(frame).toContain("150 tok");
     unmount();

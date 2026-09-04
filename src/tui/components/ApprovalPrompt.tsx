@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text, useInput } from "ink";
+import { editorial } from "../editorialTheme";
 
 export interface ApprovalPromptProps {
   toolName: string;
@@ -25,18 +26,20 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
   return (
     <Box
       borderStyle="round"
-      borderColor="yellow"
+      borderColor={editorial.gold}
       flexDirection="column"
       paddingX={1}
       marginY={1}
     >
-      <Text bold color="yellow">⚠️ TOOL EXECUTION PERMISSION REQUIRED</Text>
-      <Text color="white">Action: <Text bold color="cyan">{toolName}</Text></Text>
-      <Text color="gray">Args: {argsJSON.slice(0, 120)}</Text>
+      <Box marginBottom={1}>
+        <Text bold backgroundColor={editorial.gold} color={editorial.ink}> ⚠️ PERMISSION REQUIRED </Text>
+      </Box>
+      <Text color={editorial.creamDim}>Tool: <Text bold color={editorial.cream}>{toolName}</Text></Text>
+      <Text color={editorial.creamMute}>Args: {argsJSON.slice(0, 140)}</Text>
       <Box marginTop={1} gap={2}>
-        <Text bold color="green">[y] Allow Once</Text>
-        <Text bold color="yellow">[a] Always Allow</Text>
-        <Text bold color="red">[n/Esc] Deny</Text>
+        <Text bold backgroundColor={editorial.paper} color={editorial.ink}> [y] Allow </Text>
+        <Text bold backgroundColor={editorial.line2} color={editorial.cream}> [a] Always </Text>
+        <Text bold color={editorial.rust}> [n/Esc] Deny </Text>
       </Box>
     </Box>
   );

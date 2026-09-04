@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { editorial } from "../editorialTheme";
 
 export interface HeaderProps {
   workdir: string;
@@ -14,18 +15,19 @@ export const Header: React.FC<HeaderProps> = ({ workdir, branch, model }) => {
   return (
     <Box
       borderStyle="round"
-      borderColor="cyan"
+      borderColor={editorial.line2}
       paddingX={1}
       justifyContent="space-between"
     >
       <Box gap={1}>
-        <Text bold color="cyan">◈ ZEUF ARCHITECT</Text>
-        <Text color="gray">v0.5.0</Text>
+        <Text bold backgroundColor={editorial.paper} color={editorial.ink}> zeuf. </Text>
+        <Text color={editorial.creamMute}>— YOUR OWN CODING AGENT</Text>
       </Box>
       <Box gap={2}>
-        <Text color="gray">📁 {displayDir}</Text>
-        {branch && <Text color="yellow">⎇ {branch}</Text>}
-        <Text color="green">● {model.replace(/^opencode\//, "")}</Text>
+        <Text color={editorial.creamDim}>📁 {displayDir}</Text>
+        {branch && <Text color={editorial.gold}>⎇ {branch}</Text>}
+        <Text color={editorial.sage}>● {model.replace(/^opencode\//, "")}</Text>
+        <Text color={editorial.creamMute}>v0.5.0</Text>
       </Box>
     </Box>
   );

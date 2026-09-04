@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
+import { editorial } from "../editorialTheme";
 
 export interface PromptInputProps {
   value: string;
@@ -18,16 +19,16 @@ export const PromptInput: React.FC<PromptInputProps> = ({
   return (
     <Box
       borderStyle="round"
-      borderColor="cyan"
+      borderColor={editorial.cream}
       flexDirection="column"
       paddingX={1}
     >
       <Box justifyContent="space-between">
-        <Text bold color="white">💬 Prompt</Text>
-        <Text color="gray">[Enter: Send | /: Commands | ^P: Models | ^C: Exit]</Text>
+        <Text bold backgroundColor={editorial.paper} color={editorial.ink}> 💬 PROMPT </Text>
+        <Text color={editorial.creamMute}>[Enter: Send | /: Commands | ^P: Models | ^C: Exit]</Text>
       </Box>
       <Box marginTop={0}>
-        <Text color="yellow">› </Text>
+        <Text bold color={editorial.gold}>› </Text>
         <TextInput
           value={value}
           onChange={onChange}

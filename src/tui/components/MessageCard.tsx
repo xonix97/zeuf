@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { editorial } from "../editorialTheme";
 
 export interface MessageCardProps {
   role: "user" | "assistant" | "system" | "error";
@@ -13,16 +14,16 @@ export const MessageCard: React.FC<MessageCardProps> = ({ role, text, model, tim
     return (
       <Box
         borderStyle="round"
-        borderColor="yellow"
+        borderColor={editorial.line2}
         flexDirection="column"
         paddingX={1}
         marginY={1}
       >
         <Box justifyContent="space-between">
-          <Text bold color="yellow"> You</Text>
-          {timestamp && <Text color="gray">{timestamp}</Text>}
+          <Text bold color={editorial.gold}> YOU</Text>
+          {timestamp && <Text color={editorial.creamMute}>{timestamp}</Text>}
         </Box>
-        <Text bold color="white">{text}</Text>
+        <Text bold color={editorial.cream}>{text}</Text>
       </Box>
     );
   }
@@ -31,16 +32,19 @@ export const MessageCard: React.FC<MessageCardProps> = ({ role, text, model, tim
     return (
       <Box
         borderStyle="round"
-        borderColor="cyan"
+        borderColor={editorial.cream}
         flexDirection="column"
         paddingX={1}
         marginY={1}
       >
         <Box justifyContent="space-between">
-          <Text bold color="cyan">◈ Zeuf {model ? `[${model.replace(/^opencode\//, "")}]` : ""}</Text>
-          {timestamp && <Text color="gray">{timestamp}</Text>}
+          <Box gap={1}>
+            <Text bold backgroundColor={editorial.paper} color={editorial.ink}> zeuf. </Text>
+            {model && <Text color={editorial.creamDim}>[{model.replace(/^opencode\//, "")}]</Text>}
+          </Box>
+          {timestamp && <Text color={editorial.creamMute}>{timestamp}</Text>}
         </Box>
-        <Text color="white">{text}</Text>
+        <Text color={editorial.creamSoft}>{text}</Text>
       </Box>
     );
   }
@@ -49,20 +53,23 @@ export const MessageCard: React.FC<MessageCardProps> = ({ role, text, model, tim
     return (
       <Box
         borderStyle="round"
-        borderColor="red"
+        borderColor={editorial.rust}
         flexDirection="column"
         paddingX={1}
         marginY={1}
       >
-        <Text bold color="red">✗ Error</Text>
-        <Text color="red">{text}</Text>
+        <Box justifyContent="space-between">
+          <Text bold backgroundColor={editorial.rust} color={editorial.ink}> ERROR </Text>
+          {timestamp && <Text color={editorial.creamMute}>{timestamp}</Text>}
+        </Box>
+        <Text color={editorial.rust}>{text}</Text>
       </Box>
     );
   }
 
   return (
     <Box marginY={1} paddingLeft={1}>
-      <Text color="gray">✦ {text}</Text>
+      <Text color={editorial.creamMute}>✦ {text}</Text>
     </Box>
   );
 };
