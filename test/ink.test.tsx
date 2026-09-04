@@ -20,14 +20,26 @@ describe("Zeuf React Ink Components", () => {
     unmount();
   });
 
-  it("renders HeroBanner with manifest and shortcut cards", () => {
+  it("renders HeroBanner with manifest, shortcut cards, and recent tasks", () => {
     const { unmount, lastFrame } = render(
       <HeroBanner model="opencode/big-pickle" branch="master" />
     );
     const frame = lastFrame();
-    expect(frame).toContain("z  e  u  f  .");
+    expect(frame).toContain("zeuf.");
+    expect(frame).toContain("ONE AGENT · MANY MODEL SOURCES · YOUR MACHINE");
     expect(frame).toContain("MANIFEST");
     expect(frame).toContain("SHORTCUTS");
+    expect(frame).toContain("RECENT TASKS");
+    unmount();
+  });
+
+  it("renders HeroBanner with tasteful empty state when no recent tasks exist", () => {
+    const { unmount, lastFrame } = render(
+      <HeroBanner model="opencode/big-pickle" branch="master" recentTasks={[]} />
+    );
+    const frame = lastFrame();
+    expect(frame).toContain("No recent tasks");
+    expect(frame).toContain("Start by describing what you want Zeuf to build.");
     unmount();
   });
 
