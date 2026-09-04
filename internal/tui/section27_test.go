@@ -428,4 +428,73 @@ func TestSlashCommandNotStuckInBusy(t *testing.T) {
 	}
 }
 
+func TestThoughtTimesDisplay(t *testing.T) {
+	m := testModel()
+	m.width = 100
+
+	// 1. Send thinking start event
+	m.handleEvent(Event{Kind: "thinking", Text: "Analyzing project structure..."})
+	if len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].kind != "thinking" {
+		t.Fatalf("expected thinking block, got %+v", m.blocks)
+	}
+	tb := &m.blocks[len(m.blocks)-1]
+	if tb.thinkStart.IsZero() {
+		t.Errorf("expected thinkStart to be set")
+	}
+
+	// Manually advance thinkStart into the past to verify rendered time
+	tb.thinkStart = time.Now().Add(-2400 * time.Millisecond)
+	viewActive := stripANSI(m.renderBlocks(100))
+	if !strings.Contains(viewActive, "Thinking (") {
+		t.Errorf("active thinking missing timer: %s", viewActive)
+	}
+
+	// 2. Non-thinking event arrives, which should freeze thought duration
+	m.handleEvent(Event{Kind: "assistant", Text: "I found the issue."})
+	if !tb.thinkDone {
+		t.Errorf("expected thinking block to be marked done")
+	}
+	if tb.thinkDuration < 2*time.Second {
+		t.Errorf("expected thinkDuration >= 2s, got %v", tb.thinkDuration)
+	}
+
+	viewFinished := stripANSI(m.renderBlocks(100))
+	if !strings.Contains(viewFinished, "Thought for 2.") {
+		t.Errorf("finished thinking header missing 'Thought for 2.Xs': %s", viewFinished)
+	}
+}
+
+func TestNoMockDataInEmptyState(t *testing.T) {
+	m := testModel()
+	m.width = 120
+	m.height = 36
+
+	view := stripANSI(m.View())
+
+	// Must NOT contain any hardcoded mock strings
+	forbidden := []string{
+		"audio_analysis.rs",
+		"audio-analysis",
+		"windows-build",
+		"shader-fix",
+		"M2 +184 -37",
+		"18.4k / 64k",
+		"Visudio",
+		"fix audio beat detection",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(view, f) {
+			t.Errorf("found forbidden mock string %q in empty state view:\n%s", f, view)
+		}
+	}
+
+	// Must contain clean truth defaults
+	if !strings.Contains(view, "no files modified yet") {
+		t.Errorf("expected 'no files modified yet' in empty state, got:\n%s", view)
+	}
+	if !strings.Contains(view, "0 tokens") {
+		t.Errorf("expected '0 tokens' in empty state, got:\n%s", view)
+	}
+}
+
 

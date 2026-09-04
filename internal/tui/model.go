@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"zeuf/internal/agent"
+	"zeuf/internal/core"
 )
 
 // Modes of the root model. Overlays (picker/wizard/approval/help) capture
@@ -49,6 +50,11 @@ type block struct {
 	toolDone    bool
 	toolMs      int64
 	toolStart   time.Time
+
+	// thinking fields:
+	thinkStart    time.Time
+	thinkDuration time.Duration
+	thinkDone     bool
 
 	// subagent / verify / switch fields:
 	agentRole     string
@@ -326,6 +332,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleEvent(ev Event) {
+	if ev.Kind != "reasoning" {
+		m.finishActiveThinking()
+	}
 	switch ev.Kind {
 	case "token":
 		m.busy = true
@@ -335,7 +344,7 @@ func (m *Model) handleEvent(ev Event) {
 		}
 		m.blocks[m.streamIdx].text += ev.Text
 		m.blocks[m.streamIdx].cooked = ""
-	case "reasoning":
+	case "reasoning", "thinking":
 		m.busy = true
 		m.appendThinking(ev.Text, ev.Depth)
 	case "text":
@@ -546,13 +555,22 @@ func (m *Model) commitText(t string, depth int) {
 // maxThinkRunes bounds one thinking block; models can ramble.
 const maxThinkRunes = 2000
 
+func (m *Model) finishActiveThinking() {
+	if n := len(m.blocks); n > 0 && m.blocks[n-1].kind == "thinking" && !m.blocks[n-1].thinkDone {
+		m.blocks[n-1].thinkDone = true
+		if !m.blocks[n-1].thinkStart.IsZero() {
+			m.blocks[n-1].thinkDuration = time.Since(m.blocks[n-1].thinkStart)
+		}
+	}
+}
+
 // appendThinking accumulates reasoning text into the trailing thinking
 // block, starting a new one after anything else.
 func (m *Model) appendThinking(delta string, depth int) {
 	if delta == "" {
 		return
 	}
-	if n := len(m.blocks); n > 0 && m.blocks[n-1].kind == "thinking" && m.blocks[n-1].depth == depth {
+	if n := len(m.blocks); n > 0 && m.blocks[n-1].kind == "thinking" && m.blocks[n-1].depth == depth && !m.blocks[n-1].thinkDone {
 		cur := []rune(m.blocks[n-1].text)
 		if len(cur) >= maxThinkRunes {
 			return
@@ -566,7 +584,12 @@ func (m *Model) appendThinking(delta string, depth int) {
 		}
 		return
 	}
-	m.blocks = append(m.blocks, block{kind: "thinking", text: capThink(delta), depth: depth})
+	m.blocks = append(m.blocks, block{
+		kind:       "thinking",
+		text:       capThink(delta),
+		depth:      depth,
+		thinkStart: time.Now(),
+	})
 }
 
 // capThink bounds fresh thinking text the same way extensions are.
@@ -823,12 +846,19 @@ func (m *Model) renderBlock(bl block, width int) string {
 		}
 	case "thinking":
 		lines := wrapLines(bl.text, max(20, width-4))
-		for i, line := range lines {
-			if i == 0 {
-				b.WriteString(thinkStyle.Render("◌ "+line) + "\n")
-			} else {
-				b.WriteString(thinkStyle.Render("  "+line) + "\n")
-			}
+		dur := bl.thinkDuration
+		if dur == 0 && !bl.thinkStart.IsZero() {
+			dur = time.Since(bl.thinkStart)
+		}
+		var header string
+		if bl.thinkDone {
+			header = fmt.Sprintf("Thought for %s", fmtDur(dur))
+		} else {
+			header = fmt.Sprintf("Thinking (%s)…", fmtDur(dur))
+		}
+		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("244")).Render("◌ "+header) + "\n")
+		for _, line := range lines {
+			b.WriteString(thinkStyle.Render("  "+line) + "\n")
 		}
 	default: // assistant
 		if bl.cooked != "" {
@@ -1633,7 +1663,11 @@ func (m Model) statusView() string {
 	dot := okStyle.Render("●")
 	state := m.status.State
 	if m.busy {
-		state = "Working…"
+		durStr := ""
+		if !m.turnStart.IsZero() {
+			durStr = fmt.Sprintf(" (%s)", fmtDur(time.Since(m.turnStart)))
+		}
+		state = "Working" + durStr + "…"
 		dot = accentStyle.Render(m.spin.View())
 	} else if state != "Connected" {
 		dot = dimStyle.Render("○")
@@ -1894,7 +1928,7 @@ func parseDiffStatSummary(diffText string) string {
 			return fmt.Sprintf("M%s +%s -%s", files, ins, del)
 		}
 	}
-	return "M2 +184 -37"
+	return "clean"
 }
 
 func renderBox(title string, lines []string, w, h int, borderCol lipgloss.Color, sparkle bool) string {
@@ -1997,11 +2031,22 @@ func (m Model) renderSessionsBox(w, h int) string {
 
 	sessions := m.status.Sessions
 	if len(sessions) == 0 {
-		active := m.status.Branch
-		if active == "" {
-			active = "audio-analysis"
+		if m.status.Branch != "" {
+			sessions = append(sessions, m.status.Branch)
 		}
-		sessions = []string{active, "windows-build", "shader-fix"}
+		list, _ := core.ListSessions()
+		for _, s := range list {
+			lbl := s.ID
+			if s.Task != "" {
+				lbl = truncRunes(s.Task, max(8, w-6))
+			}
+			if len(sessions) == 0 || sessions[0] != lbl {
+				sessions = append(sessions, lbl)
+			}
+			if len(sessions) >= 5 {
+				break
+			}
+		}
 	}
 
 	activeSession := m.status.ActiveSession
@@ -2009,13 +2054,17 @@ func (m Model) renderSessionsBox(w, h int) string {
 		activeSession = sessions[0]
 	}
 
-	for _, s := range sessions {
-		if s == activeSession {
-			cursor := lipgloss.NewStyle().Bold(true).Foreground(orangeColor).Render("› ")
-			name := lipgloss.NewStyle().Bold(true).Foreground(textBright).Render(s)
-			lines = append(lines, cursor+name)
-		} else {
-			lines = append(lines, dimStyle.Render("  "+s))
+	if len(sessions) == 0 {
+		lines = append(lines, dimStyle.Render("  no sessions yet"))
+	} else {
+		for _, s := range sessions {
+			if s == activeSession {
+				cursor := lipgloss.NewStyle().Bold(true).Foreground(orangeColor).Render("› ")
+				name := lipgloss.NewStyle().Bold(true).Foreground(textBright).Render(truncRunes(s, max(6, w-6)))
+				lines = append(lines, cursor+name)
+			} else {
+				lines = append(lines, dimStyle.Render("  "+truncRunes(s, max(6, w-6))))
+			}
 		}
 	}
 
@@ -2049,7 +2098,7 @@ func (m Model) renderCenterCol(w, h int) string {
 		lines = append(lines, dimStyle.Render("  Inspects repos, plans DAGs, dispatches specialist subagents,"))
 		lines = append(lines, dimStyle.Render("  executes tools, and verifies results with self-repair."))
 		lines = append(lines, "")
-		lines = append(lines, dimStyle.Render("  Ask for a change, e.g. \"fix audio beat detection in Visudio\""))
+		lines = append(lines, dimStyle.Render("  Ask for a change, e.g. \"add unit tests for auth package\""))
 		lines = append(lines, "")
 		lines = append(lines, dimStyle.Render("  /plan      view task graph     /agents    view subagents"))
 		lines = append(lines, dimStyle.Render("  /models    switch model        /connect   attach backend"))
@@ -2076,11 +2125,11 @@ func (m Model) renderRightCol(w, h int) string {
 
 	modelName := nonEmpty(m.status.Display, m.status.Model)
 	if modelName == "" || modelName == "—" {
-		modelName = "Claude Sonnet"
+		modelName = "auto"
 	}
 	ctxStr := m.status.Ctx
 	if ctxStr == "" {
-		ctxStr = "18.4k / 64k"
+		ctxStr = "0 tokens"
 	}
 	if m.status.CtxPct != "" {
 		ctxStr += " (" + m.status.CtxPct + ")"
@@ -2102,8 +2151,10 @@ func (m Model) renderRightCol(w, h int) string {
 	if gitStat == "" {
 		if m.status.Dirty != "" && m.status.Branch != "" {
 			gitStat = "⎇ " + m.status.Branch + m.status.Dirty
+		} else if m.status.Branch != "" {
+			gitStat = "⎇ " + m.status.Branch + " (clean)"
 		} else {
-			gitStat = "M2 +184 -37"
+			gitStat = "clean"
 		}
 	}
 
@@ -2137,7 +2188,7 @@ func (m Model) renderTouchedFileTree(maxLines int, innerW int) []string {
 
 	files := m.touchedFiles
 	if len(files) == 0 {
-		files = []string{"src/audio_analysis.rs", "src/main.rs", "src/shader.rs"}
+		return []string{dimStyle.Render("  no files modified yet")}
 	}
 
 	dirMap := make(map[string][]string)
@@ -2145,7 +2196,7 @@ func (m Model) renderTouchedFileTree(maxLines int, innerW int) []string {
 	for _, f := range files {
 		dir := filepath.Dir(f)
 		if dir == "." {
-			dir = "src"
+			dir = "./"
 		}
 		if _, ok := dirMap[dir]; !ok {
 			dirs = append(dirs, dir)
@@ -2157,7 +2208,11 @@ func (m Model) renderTouchedFileTree(maxLines int, innerW int) []string {
 		if len(out) >= maxLines {
 			break
 		}
-		out = append(out, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81")).Render(d+"/"))
+		dirLabel := d
+		if !strings.HasSuffix(dirLabel, "/") {
+			dirLabel += "/"
+		}
+		out = append(out, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81")).Render(dirLabel))
 		fileList := dirMap[d]
 		for i, base := range fileList {
 			if len(out) >= maxLines {
