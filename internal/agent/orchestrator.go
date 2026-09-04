@@ -86,6 +86,12 @@ func (o *Orchestrator) Execute(ctx context.Context, sess *Session2, prefs router
 		o.Tools.Policy.Approver = o.Hub.Ask
 	}
 
+	// Conversational Fast-Path (greetings, simple queries)
+	// Completely bypasses git discovery, DAG planning, scheduling, and verification.
+	if isConversational(taskText) {
+		return o.executeConversational(ctx, sess, prefs, taskText)
+	}
+
 	// -------------------------------------------------------------------------
 	// 1. INTAKE
 	// -------------------------------------------------------------------------
@@ -273,6 +279,53 @@ func (o *Orchestrator) Execute(ctx context.Context, sess *Session2, prefs router
 	o.Trace.Record("orchestration_completed", StateCompletion, "", "", "", 0, "final report generated")
 
 	return finalReport, nil
+}
+
+func isConversational(task string) bool {
+	lower := strings.ToLower(strings.TrimSpace(task))
+	lower = strings.TrimRight(lower, "!?. ")
+	switch lower {
+	case "hi", "hello", "hey", "yo", "sup", "howdy", "hiya", "good morning", "good evening", "good afternoon", "ping":
+		return true
+	case "who are you", "what are you", "what is zeuf", "help", "what can you do":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) executeConversational(ctx context.Context, sess *Session2, prefs router.Prefs, taskText string) (string, error) {
+	o.StateMachine.TransitionTo(StateIntake, "conversational: "+taskText)
+
+	taskReq := router.TaskReq{
+		PreferCoding: false,
+		NeedTools:    false,
+		PreferReason: false,
+		Hint:         taskText,
+	}
+
+	resp, entry, err := o.Router.Do(ctx, sess.ChatRequest(), taskReq, prefs, func(e router.Entry, req core.ChatRequest) (*core.ChatResponse, error) {
+		return e.Backend.Chat(ctx, req)
+	})
+	if err != nil {
+		return "", err
+	}
+
+	sess.NoteModel(entry.Model.FullID())
+	sess.AddUsage(resp.Usage)
+	o.emit(Event{Type: EvUsage, Usage: resp.Usage, Model: entry.Model.FullID()})
+
+	content := resp.Content
+	if content == "" {
+		content = "Hello! I am Zeuf, your coding agent. How can I help you today?"
+	}
+
+	sess.CommitAssistant(content, nil)
+	o.emit(Event{Type: EvAssistant, Text: content, Model: entry.Model.FullID()})
+	o.emit(Event{Type: EvDone})
+	o.Trace.Record("conversational_completed", StateCompletion, "", "", "", 0, content)
+
+	return content, nil
 }
 
 func (o *Orchestrator) executeTask(ctx context.Context, task *Task, sess *Session2, prefs router.Prefs) (string, error) {

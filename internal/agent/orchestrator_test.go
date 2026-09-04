@@ -268,3 +268,62 @@ func TestOrchestrationModelFallback(t *testing.T) {
 		t.Errorf("expected final report to be complete, got: %s", finalReport)
 	}
 }
+
+func TestOrchestratorConversationalFastPath(t *testing.T) {
+	// Verify isConversational matching
+	for _, greeting := range []string{"hi", "hello", "hey", "yo", "sup", "howdy", "who are you"} {
+		if !isConversational(greeting) {
+			t.Errorf("expected isConversational(%q) = true", greeting)
+		}
+	}
+	for _, task := range []string{"fix the typo in auth.go", "create dir foo", "can u make a new dir here called tiki2"} {
+		if isConversational(task) {
+			t.Errorf("expected isConversational(%q) = false", task)
+		}
+	}
+
+	dir := t.TempDir()
+	tools := ct.NewRegistry(dir, ct.Policy{AutoApprove: true})
+
+	mockModel := mock.New("mock-chat", []core.ModelInfo{
+		mock.Model("mock-chat", "fast-chat", 0.9, 100000, true),
+	}, []mock.Script{
+		{Resp: &core.ChatResponse{Content: "Hello! How can I help you today?"}},
+	})
+
+	reg := router.NewRegistry()
+	reg.Register(mockModel)
+	ms, _ := mockModel.ListModels(context.Background())
+	var es []router.Entry
+	for _, m := range ms {
+		es = append(es, router.Entry{Model: m, Backend: mockModel})
+	}
+	reg.SetModels(es)
+	r := router.New(reg)
+
+	var emittedEvents []EventType
+	orch := NewOrchestrator(r, tools)
+	orch.Emit = func(ev Event) {
+		emittedEvents = append(emittedEvents, ev.Type)
+	}
+
+	sess := NewSession("s-hello", "hi", tools)
+	resp, err := orch.Execute(context.Background(), sess, router.DefaultPrefs())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp != "Hello! How can I help you today?" {
+		t.Errorf("unexpected response: %q", resp)
+	}
+
+	// Must NOT emit EvGraph (no DAG planning) or EvVerifyStart (no verification)
+	for _, ev := range emittedEvents {
+		if ev == EvGraph {
+			t.Error("conversational turn must not plan task graph")
+		}
+		if ev == EvVerifyStart {
+			t.Error("conversational turn must not run verification")
+		}
+	}
+}
+

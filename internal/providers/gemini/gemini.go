@@ -70,15 +70,13 @@ func oauthCreds() string {
 }
 
 // authed reports usable credentials: documented env vars or a prior
-// `gemini` login (credential file presence only).
+// `gemini` login. Note: legacy oauth_creds.json without GEMINI_API_KEY
+// is end-of-life for individuals and triggers IneligibleTierError.
 func authed() bool {
 	for _, env := range []string{"GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_GCA"} {
 		if strings.TrimSpace(os.Getenv(env)) != "" {
 			return true
 		}
-	}
-	if st, err := os.Stat(oauthCreds()); err == nil && !st.IsDir() {
-		return true
 	}
 	return false
 }
