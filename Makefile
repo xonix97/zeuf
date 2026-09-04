@@ -7,6 +7,7 @@ build:
 
 install: build
 	install -Dm755 zeuf $(HOME)/.local/bin/zeuf
+	install -Dm755 zeuf $(HOME)/bin/zeuf 2>/dev/null || true
 
 test:
 	go test -v ./...
