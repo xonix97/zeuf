@@ -112,8 +112,40 @@ func isLoopbackURL(raw string) bool {
 	return false
 }
 
-// ListModels implements providers.Adapter via GET /models (best effort:
-// the chat API always works even if listing is unsupported).
+func enrichModelInfo(mi *core.ModelInfo) {
+	id := strings.ToLower(mi.ID)
+	switch {
+	case strings.Contains(id, "deepseek-reasoner") || strings.Contains(id, "deepseek-r1"):
+		mi.Caps.ContextLength = 64000
+		mi.Scores = core.Scores{Coding: 0.94, Reasoning: 0.96, Quality: 0.93, Latency: 0.70}
+	case strings.Contains(id, "deepseek-chat") || strings.Contains(id, "deepseek-v3"):
+		mi.Caps.ContextLength = 64000
+		mi.Scores = core.Scores{Coding: 0.89, Reasoning: 0.87, Quality: 0.89, Latency: 0.85}
+	case strings.Contains(id, "o1"):
+		mi.Caps.ContextLength = 200000
+		mi.Scores = core.Scores{Coding: 0.95, Reasoning: 0.97, Quality: 0.95, Latency: 0.65}
+	case strings.Contains(id, "o3-mini"):
+		mi.Caps.ContextLength = 200000
+		mi.Scores = core.Scores{Coding: 0.93, Reasoning: 0.94, Quality: 0.92, Latency: 0.90}
+	case strings.Contains(id, "gpt-4o-mini"):
+		mi.Caps.ContextLength = 128000
+		mi.Scores = core.Scores{Coding: 0.82, Reasoning: 0.80, Quality: 0.82, Latency: 0.95}
+	case strings.Contains(id, "gpt-4o"):
+		mi.Caps.ContextLength = 128000
+		mi.Scores = core.Scores{Coding: 0.90, Reasoning: 0.88, Quality: 0.90, Latency: 0.85}
+	case strings.Contains(id, "codestral"):
+		mi.Caps.ContextLength = 256000
+		mi.Scores = core.Scores{Coding: 0.92, Reasoning: 0.86, Quality: 0.88, Latency: 0.85}
+	case strings.Contains(id, "qwen2.5-coder"):
+		mi.Caps.ContextLength = 128000
+		mi.Scores = core.Scores{Coding: 0.91, Reasoning: 0.85, Quality: 0.87, Latency: 0.85}
+	case strings.Contains(id, "llama-3.3") || strings.Contains(id, "llama-3.1-70b"):
+		mi.Caps.ContextLength = 128000
+		mi.Scores = core.Scores{Coding: 0.87, Reasoning: 0.86, Quality: 0.87, Latency: 0.88}
+	}
+}
+
+// ListModels implements providers.Adapter via GET /models
 func (a *Adapter) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 	key, err := a.key()
 	if err != nil && !a.keyless() {
@@ -143,7 +175,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 	out := make([]core.ModelInfo, 0, len(v.Data))
 	free := isLoopbackURL(a.cfg.BaseURL)
 	for _, m := range v.Data {
-		out = append(out, core.ModelInfo{
+		info := core.ModelInfo{
 			ID: m.ID, Provider: a.Name(), DisplayName: m.ID,
 			Caps:         core.Capabilities{SupportsTools: true, SupportsStreaming: true},
 			Scores:       core.UnknownScores(),
@@ -151,7 +183,9 @@ func (a *Adapter) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 			QuotaState:   "unknown",
 			IsFree:       free,
 			CostKnown:    free,
-		})
+		}
+		enrichModelInfo(&info)
+		out = append(out, info)
 	}
 	return out, nil
 }
@@ -165,6 +199,7 @@ type oaMessage struct {
 }
 
 type oaToolCall struct {
+	Index    *int   `json:"index,omitempty"`
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
@@ -251,8 +286,10 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Content   string       `json:"content"`
-				ToolCalls []oaToolCall `json:"tool_calls"`
+				Content          string       `json:"content"`
+				ReasoningContent string       `json:"reasoning_content"`
+				Reasoning        string       `json:"reasoning"`
+				ToolCalls        []oaToolCall `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
@@ -266,6 +303,13 @@ func (a *Adapter) Chat(ctx context.Context, req core.ChatRequest) (*core.ChatRes
 	out := &core.ChatResponse{Model: req.Model, Provider: a.Name(), Usage: core.Usage{Input: v.Usage.PromptTokens, Output: v.Usage.CompletionTokens}}
 	if len(v.Choices) > 0 {
 		out.Content = v.Choices[0].Message.Content
+		if out.Content == "" {
+			if v.Choices[0].Message.ReasoningContent != "" {
+				out.Content = v.Choices[0].Message.ReasoningContent
+			} else if v.Choices[0].Message.Reasoning != "" {
+				out.Content = v.Choices[0].Message.Reasoning
+			}
+		}
 		for _, tc := range v.Choices[0].Message.ToolCalls {
 			out.ToolCalls = append(out.ToolCalls, core.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 		}
@@ -290,6 +334,32 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 		defer close(ch)
 		defer resp.Body.Close()
 		var usage core.Usage
+
+		type toolBuilder struct {
+			id   string
+			name string
+			args strings.Builder
+		}
+		toolCalls := map[int]*toolBuilder{}
+		var toolOrder []int
+
+		emitTools := func() {
+			if len(toolOrder) > 0 {
+				calls := make([]core.ToolCall, 0, len(toolOrder))
+				for _, idx := range toolOrder {
+					tb := toolCalls[idx]
+					calls = append(calls, core.ToolCall{
+						ID:        tb.id,
+						Name:      tb.name,
+						Arguments: tb.args.String(),
+					})
+				}
+				ch <- core.StreamEvent{Type: core.EventTool, ToolCalls: calls}
+				toolOrder = nil
+				toolCalls = map[int]*toolBuilder{}
+			}
+		}
+
 		sc := bufio.NewScanner(resp.Body)
 		sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for sc.Scan() {
@@ -302,6 +372,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 			}
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
+				emitTools()
 				ch <- core.StreamEvent{Type: core.EventDone, Usage: usage}
 				return
 			}
@@ -310,6 +381,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 					Delta struct {
 						Content          string       `json:"content"`
 						ReasoningContent string       `json:"reasoning_content"`
+						Reasoning        string       `json:"reasoning"`
 						ToolCalls        []oaToolCall `json:"tool_calls"`
 					} `json:"delta"`
 					FinishReason string `json:"finish_reason"`
@@ -327,16 +399,39 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 				usage.Output += v.Usage.CompletionTokens
 			}
 			for _, c := range v.Choices {
-				if c.Delta.ReasoningContent != "" {
-					ch <- core.StreamEvent{Type: core.EventReasoning, Delta: c.Delta.ReasoningContent}
+				reasoning := c.Delta.ReasoningContent
+				if reasoning == "" {
+					reasoning = c.Delta.Reasoning
+				}
+				if reasoning != "" {
+					ch <- core.StreamEvent{Type: core.EventReasoning, Delta: reasoning}
 				}
 				if c.Delta.Content != "" {
 					ch <- core.StreamEvent{Type: core.EventToken, Delta: c.Delta.Content}
 				}
 				for _, tc := range c.Delta.ToolCalls {
-					ch <- core.StreamEvent{Type: core.EventTool, ToolCalls: []core.ToolCall{{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments}}}
+					idx := 0
+					if tc.Index != nil {
+						idx = *tc.Index
+					}
+					tb, ok := toolCalls[idx]
+					if !ok {
+						tb = &toolBuilder{}
+						toolCalls[idx] = tb
+						toolOrder = append(toolOrder, idx)
+					}
+					if tc.ID != "" {
+						tb.id = tc.ID
+					}
+					if tc.Function.Name != "" {
+						tb.name = tc.Function.Name
+					}
+					if tc.Function.Arguments != "" {
+						tb.args.WriteString(tc.Function.Arguments)
+					}
 				}
 				if c.FinishReason != "" {
+					emitTools()
 					ch <- core.StreamEvent{Type: core.EventDone, Usage: usage}
 					return
 				}
@@ -349,6 +444,7 @@ func (a *Adapter) Stream(ctx context.Context, req core.ChatRequest) (<-chan core
 			}
 			return
 		}
+		emitTools()
 		ch <- core.StreamEvent{Type: core.EventDone, Usage: usage}
 	}()
 	return ch, nil

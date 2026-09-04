@@ -97,6 +97,43 @@ type StreamEvent struct {
 	Err error `json:"-"`
 }
 
+// ---- Execution, Verification & Observability -------------------------------
+
+// ToolStatus classifies tool outcomes strictly.
+type ToolStatus string
+
+const (
+	ToolStatusSuccess            ToolStatus = "success"
+	ToolStatusFailure            ToolStatus = "failure"
+	ToolStatusPermissionRequired ToolStatus = "permission_required"
+	ToolStatusTimeout            ToolStatus = "timeout"
+	ToolStatusCancelled          ToolStatus = "cancelled"
+)
+
+// VerificationResult is the structured, factual record of a verification step.
+type VerificationResult struct {
+	TaskID           string        `json:"task_id"`
+	Command          string        `json:"command"`
+	ExitCode         int           `json:"exit_code"`
+	Duration         time.Duration `json:"duration"`
+	Stdout           string        `json:"stdout"`
+	Stderr           string        `json:"stderr"`
+	Passed           bool          `json:"passed"`
+	FailureDiagnosis string        `json:"failure_diagnosis,omitempty"`
+}
+
+// TraceEvent records one lifecycle step for observability and diagnostics.
+type TraceEvent struct {
+	Timestamp time.Time     `json:"timestamp"`
+	Kind      string        `json:"kind"` // "state_transition", "task_status", "model_call", "model_switch", "tool_call", "subagent_lifecycle", "verification", "error", "retry"
+	State     string        `json:"state,omitempty"`
+	TaskID    string        `json:"task_id,omitempty"`
+	Model     string        `json:"model,omitempty"`
+	Tool      string        `json:"tool,omitempty"`
+	Duration  time.Duration `json:"duration,omitempty"`
+	Details   string        `json:"details,omitempty"`
+}
+
 // ---- Model metadata --------------------------------------------------------
 
 // Capabilities describes what a model can do, when the provider exposes it.

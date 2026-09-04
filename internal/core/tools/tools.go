@@ -177,6 +177,9 @@ func (r *Registry) Get(name string) (Tool, bool) { t, ok := rangeMap(r.tools, na
 // AddTool registers an additional tool (e.g. the orchestrator's delegate).
 func (r *Registry) AddTool(t Tool) { r.tools[t.Name] = t }
 
+// RemoveTool unregisters a named tool from the registry.
+func (r *Registry) RemoveTool(name string) { delete(r.tools, name) }
+
 func rangeMap(m map[string]Tool, k string) (Tool, bool) { t, ok := m[k]; return t, ok }
 
 // ToolDefs returns definitions in the shared shape used by providers.

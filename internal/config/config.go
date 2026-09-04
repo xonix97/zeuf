@@ -12,9 +12,10 @@ import (
 	"zeuf/internal/router"
 )
 
-// DirectEndpoint configures one OpenAI-compatible backend.
+// DirectEndpoint configures one direct backend (OpenAI-compatible or native Anthropic).
 type DirectEndpoint struct {
 	Name      string `json:"name"`
+	Type      string `json:"type,omitempty"` // "openai" (default) or "anthropic"
 	BaseURL   string `json:"base_url"`
 	APIKeyEnv string `json:"api_key_env"`
 }

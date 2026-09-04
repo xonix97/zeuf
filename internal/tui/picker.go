@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"fmt"
-
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -37,6 +35,7 @@ type pickerState struct {
 
 // openPicker builds the /models overlay: Auto first, then rows.
 func (m *Model) openPicker(models []PickerModel) {
+	m.busy = false
 	items := []list.Item{pickerItem{auto: true, fullID: "", display: "Auto", detail: "best free model per task, with fallback"}}
 	pinned := ""
 	for _, pm := range models {
@@ -96,11 +95,15 @@ func (m Model) handlePickerKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		}
 		m.picker = nil
 		m.mode = modeChat
+		m.busy = false
+		m.flushPending()
 		return m, nil
 	case "enter":
 		sel, ok := m.picker.list.SelectedItem().(pickerItem)
 		m.picker = nil
 		m.mode = modeChat
+		m.busy = false
+		m.flushPending()
 		if !ok {
 			return m, nil
 		}
@@ -111,7 +114,8 @@ func (m Model) handlePickerKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 				m.actions <- ActionPin{FullID: sel.fullID}
 			}
 		}
-		m.blocks = append(m.blocks, block{kind: "system", text: pinNote(sel)})
+		// The core confirms the pin/unpin as a text event; no local echo
+		// (avoids the double confirmation).
 		m.refreshViewport()
 		return m, nil
 	}
@@ -126,11 +130,4 @@ func (m Model) handlePickerKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	var cmd tea.Cmd
 	m.picker.list, cmd = m.picker.list.Update(msg)
 	return m, cmd
-}
-
-func pinNote(sel pickerItem) string {
-	if sel.auto {
-		return "Routing: automatic."
-	}
-	return fmt.Sprintf("Pinned: %s", sel.fullID)
 }

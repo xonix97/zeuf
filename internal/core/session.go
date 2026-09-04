@@ -10,20 +10,25 @@ import (
 // selected backend needs on every turn, so switching models never restarts
 // the conversation.
 type Session struct {
-	ID             string            `json:"id"`
-	Task           string            `json:"task"`
-	SystemPrompt   string            `json:"system_prompt"`
-	Messages       []Message         `json:"messages"`
-	Plan           []PlanStep        `json:"plan"`
-	FilesInspected []string          `json:"files_inspected"`
-	PendingTools   []ToolCall        `json:"pending_tools,omitempty"`
-	TokensIn       int64             `json:"tokens_in"`
-	TokensOut      int64             `json:"tokens_out"`
-	Checkpoints    []Checkpoint      `json:"checkpoints,omitempty"`
-	SwitchTrail    []string          `json:"switch_trail"` // model FullIDs used, in order
-	Meta           map[string]string `json:"meta,omitempty"`
-	Created        time.Time         `json:"created"`
-	Updated        time.Time         `json:"updated"`
+	ID                  string               `json:"id"`
+	Task                string               `json:"task"`
+	SystemPrompt        string               `json:"system_prompt"`
+	Messages            []Message            `json:"messages"`
+	Plan                []PlanStep           `json:"plan"`
+	FilesInspected      []string             `json:"files_inspected"`
+	PreExistingDirty    []string             `json:"pre_existing_dirty,omitempty"`
+	ModifiedFiles       []string             `json:"modified_files,omitempty"`
+	VerificationHistory []VerificationResult `json:"verification_history,omitempty"`
+	Trace               []TraceEvent         `json:"trace,omitempty"`
+	TaskGraphData       []byte               `json:"task_graph_data,omitempty"`
+	PendingTools        []ToolCall           `json:"pending_tools,omitempty"`
+	TokensIn            int64                `json:"tokens_in"`
+	TokensOut           int64                `json:"tokens_out"`
+	Checkpoints         []Checkpoint         `json:"checkpoints,omitempty"`
+	SwitchTrail         []string             `json:"switch_trail"` // model FullIDs used, in order
+	Meta                map[string]string    `json:"meta,omitempty"`
+	Created             time.Time            `json:"created"`
+	Updated             time.Time            `json:"updated"`
 }
 
 // FileVersion records a file's pre-turn content for rewind.
@@ -126,12 +131,48 @@ func (s *Session) NoteModelSwitch(fullID string) {
 	s.touch()
 }
 
+// NoteModifiedFile remembers a modified file (deduplicated).
+func (s *Session) NoteModifiedFile(path string) {
+	for _, f := range s.ModifiedFiles {
+		if f == path {
+			return
+		}
+	}
+	s.ModifiedFiles = append(s.ModifiedFiles, path)
+	s.touch()
+}
+
+// AddVerification records a verification step outcome.
+func (s *Session) AddVerification(res VerificationResult) {
+	s.VerificationHistory = append(s.VerificationHistory, res)
+	s.touch()
+}
+
+// AddTrace records an observability trace event.
+func (s *Session) AddTrace(ev TraceEvent) {
+	s.Trace = append(s.Trace, ev)
+	s.touch()
+}
+
+// SetTaskGraphData stores the serialized task graph.
+func (s *Session) SetTaskGraphData(data []byte) {
+	s.TaskGraphData = data
+	s.touch()
+}
+
 // Snapshot returns a deep copy for tests / safe handoff.
 func (s *Session) Snapshot() *Session {
 	cp := *s
 	cp.Messages = append([]Message(nil), s.Messages...)
 	cp.Plan = append([]PlanStep(nil), s.Plan...)
 	cp.FilesInspected = append([]string(nil), s.FilesInspected...)
+	cp.PreExistingDirty = append([]string(nil), s.PreExistingDirty...)
+	cp.ModifiedFiles = append([]string(nil), s.ModifiedFiles...)
+	cp.VerificationHistory = append([]VerificationResult(nil), s.VerificationHistory...)
+	cp.Trace = append([]TraceEvent(nil), s.Trace...)
+	if len(s.TaskGraphData) > 0 {
+		cp.TaskGraphData = append([]byte(nil), s.TaskGraphData...)
+	}
 	cp.PendingTools = append([]ToolCall(nil), s.PendingTools...)
 	cp.SwitchTrail = append([]string(nil), s.SwitchTrail...)
 	cp.Checkpoints = append([]Checkpoint(nil), s.Checkpoints...)

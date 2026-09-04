@@ -5,6 +5,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"zeuf/internal/config"
 	"zeuf/internal/core"
 	ct "zeuf/internal/core/tools"
+	"zeuf/internal/providers/anthropic"
+	"zeuf/internal/providers/antigravity"
 	"zeuf/internal/providers/direct"
 	"zeuf/internal/providers/gemini"
 	"zeuf/internal/providers/kilo"
@@ -58,7 +61,7 @@ use --plain for line-based output, or a subcommand for one-shot use.`,
 	root.PersistentFlags().Bool("tui", false, "force the full-screen TUI (default when interactive)")
 	root.PersistentFlags().Bool("plain", false, "force plain CLI output instead of the TUI")
 
-	root.AddCommand(initCmd(), runCmd(), modelsCmd(), providersCmd(), configCmd(), doctorCmd(), tuiCmd(), connectCmd(), sessionsCmd(), mcpCmd())
+	root.AddCommand(initCmd(), runCmd(), modelsCmd(), providersCmd(), configCmd(), doctorCmd(), tuiCmd(), connectCmd(), sessionsCmd(), mcpCmd(), agentsCmd(), planCmd(), statusCmd())
 	return root
 }
 
@@ -90,13 +93,58 @@ func session(ctx context.Context, workdir string) (config.Config, *router.Regist
 	reg.Register(opencode.New(opencode.Config{ServeURL: cfg.OpencodeServe, Workdir: workdir}))
 	reg.Register(kilo.New(kilo.Config{ServeURL: cfg.KiloServe, Workdir: workdir}))
 	reg.Register(gemini.New(gemini.Config{Workdir: workdir}))
+	reg.Register(antigravity.New(antigravity.Config{Workdir: workdir}))
 	for _, d := range cfg.Direct {
-		reg.Register(direct.New(direct.Config{Name: d.Name, BaseURL: d.BaseURL, APIKeyEnv: d.APIKeyEnv}))
+		if d.Type == "anthropic" || d.Name == "anthropic" || strings.Contains(d.BaseURL, "anthropic.com") {
+			reg.Register(anthropic.New(anthropic.Config{Name: d.Name, BaseURL: d.BaseURL, APIKeyEnv: d.APIKeyEnv}))
+		} else {
+			reg.Register(direct.New(direct.Config{Name: d.Name, BaseURL: d.BaseURL, APIKeyEnv: d.APIKeyEnv}))
+		}
 	}
+	autoRegisterEnvBackends(reg, cfg)
 	r := router.New(reg)
 	tools := ct.NewRegistry(workdir, ct.Policy{AutoApprove: cfg.AutoApprove, Approver: terminalApprover(cfg.AutoApprove)})
 	ag := agent.New(r, tools)
 	return cfg, reg, r, tools, ag, nil
+}
+
+func autoRegisterEnvBackends(reg *router.Registry, cfg config.Config) {
+	configured := map[string]bool{}
+	for _, d := range cfg.Direct {
+		configured[d.Name] = true
+	}
+
+	type envBackend struct {
+		name        string
+		baseURL     string
+		envKey      string
+		isAnthropic bool
+	}
+	candidates := []envBackend{
+		{name: "anthropic", baseURL: "https://api.anthropic.com/v1", envKey: "ANTHROPIC_API_KEY", isAnthropic: true},
+		{name: "deepseek", baseURL: "https://api.deepseek.com", envKey: "DEEPSEEK_API_KEY"},
+		{name: "groq", baseURL: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY"},
+		{name: "openai", baseURL: "https://api.openai.com/v1", envKey: "OPENAI_API_KEY"},
+		{name: "mistral", baseURL: "https://api.mistral.ai/v1", envKey: "MISTRAL_API_KEY"},
+		{name: "codestral", baseURL: "https://codestral.mistral.ai/v1", envKey: "CODESTRAL_API_KEY"},
+		{name: "openrouter", baseURL: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY"},
+		{name: "together", baseURL: "https://api.together.xyz/v1", envKey: "TOGETHER_API_KEY"},
+		{name: "fireworks", baseURL: "https://api.fireworks.ai/inference/v1", envKey: "FIREWORKS_API_KEY"},
+		{name: "xai", baseURL: "https://api.x.ai/v1", envKey: "XAI_API_KEY"},
+	}
+
+	for _, c := range candidates {
+		if configured[c.name] {
+			continue
+		}
+		if val := strings.TrimSpace(os.Getenv(c.envKey)); val != "" {
+			if c.isAnthropic {
+				reg.Register(anthropic.New(anthropic.Config{Name: c.name, BaseURL: c.baseURL, APIKeyEnv: c.envKey}))
+			} else {
+				reg.Register(direct.New(direct.Config{Name: c.name, BaseURL: c.baseURL, APIKeyEnv: c.envKey}))
+			}
+		}
+	}
 }
 
 func terminalApprover(auto bool) ct.Approver {
@@ -143,9 +191,10 @@ func prefsFrom(cfg config.Config) router.Prefs {
 
 func runCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "run [task...]",
-		Short: "Run a single task non-interactively",
-		Args:  cobra.MinimumNArgs(1),
+		Use:     "run [task...]",
+		Aliases: []string{"exec"},
+		Short:   "Run a single task non-interactively",
+		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			task := strings.Join(args, " ")
@@ -156,7 +205,10 @@ func runCmd() *cobra.Command {
 			mgr := attachMCP(ctx, cfg, tools)
 			defer mgr.Close()
 			prefs := prefsFrom(cfg)
-			fmt.Fprintln(os.Stderr, "zeuf: discovering models…")
+			jsonOut, _ := cmd.Flags().GetBool("json")
+			if !jsonOut {
+				fmt.Fprintln(os.Stderr, "zeuf: discovering models…")
+			}
 			refreshNow(ctx, reg)
 			var sess *agent.Session2
 			if resumeID, _ := cmd.Flags().GetString("resume"); resumeID != "" {
@@ -166,26 +218,48 @@ func runCmd() *cobra.Command {
 				}
 				sess = agent.NewSession(loaded.ID, task, tools)
 				sess.Session = loaded
-				fmt.Fprintf(os.Stderr, "zeuf: resumed session %s (%d message(s))\n", loaded.ID, len(loaded.Messages))
+				if !jsonOut {
+					fmt.Fprintf(os.Stderr, "zeuf: resumed session %s (%d message(s))\n", loaded.ID, len(loaded.Messages))
+				}
 			} else {
 				sess = agent.NewSession(newID(), task, tools)
 			}
 			sess.AppendUser(task)
-			state := wireOutput(ag, r)
+			var state func() (bool, bool)
+			if !jsonOut {
+				state = wireOutput(ag, r)
+			}
 			out, err := ag.RunTurn(ctx, sess, prefs)
-			if saveErr := saveSession(sess, tools.Workdir); saveErr != nil {
+			if saveErr := saveSession(sess, tools.Workdir); saveErr != nil && !jsonOut {
 				fmt.Fprintf(os.Stderr, "zeuf: save session: %v\n", core.Redact(saveErr.Error()))
 			}
 			if err != nil {
 				return err
 			}
-			if err != nil {
-				return err
+			if jsonOut {
+				lastModel := ""
+				if len(sess.Session.SwitchTrail) > 0 {
+					lastModel = sess.Session.SwitchTrail[len(sess.Session.SwitchTrail)-1]
+				}
+				res := map[string]any{
+					"task":       task,
+					"output":     out,
+					"model":      lastModel,
+					"turns":      len(sess.Session.Messages),
+					"tokens_in":  sess.Session.TokensIn,
+					"tokens_out": sess.Session.TokensOut,
+				}
+				data, _ := json.MarshalIndent(res, "", "  ")
+				fmt.Println(string(data))
+				return nil
 			}
 			// The final text already went to a TTY stderr via the stream or
 			// the assistant echo; print it only when the user hasn't seen it
 			// (piped use stays scriptable).
-			streamed, echoed := state()
+			var streamed, echoed bool
+			if state != nil {
+				streamed, echoed = state()
+			}
 			if !term.IsTerminal(int(os.Stdout.Fd())) || (!streamed && !echoed) {
 				fmt.Println(out)
 			}
@@ -195,6 +269,7 @@ func runCmd() *cobra.Command {
 	c.Flags().StringVarP(&flagModel, "model", "m", "", "pin a model (provider/id or id)")
 	c.Flags().StringVar(&flagMode, "mode", "", "routing mode: auto|balanced|fastest|quality")
 	c.Flags().String("resume", "", "resume a saved session id (see `zeuf sessions`)")
+	c.Flags().Bool("json", false, "output result as structured JSON for automation pipelines")
 	return c
 }
 
@@ -427,33 +502,214 @@ func lookPath(bin string) (string, error) {
 	return "", fmt.Errorf("not found")
 }
 
+// ---- agents -----------------------------------------------------------------
+
+func agentsCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "agents",
+		Short: "Inspect specialist subagents from current or latest session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			list, err := core.ListSessions()
+			if err != nil || len(list) == 0 {
+				fmt.Println("no session records found")
+				return nil
+			}
+			sessID, _ := cmd.Flags().GetString("session")
+			if sessID == "" {
+				sessID = list[0].ID
+			}
+			loaded, err := core.LoadSession(sessID)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Session: %s (Task: %s)\n", loaded.ID, loaded.Task)
+			if len(loaded.TaskGraphData) > 0 {
+				if g, err := agent.FromJSON(loaded.TaskGraphData); err == nil {
+					fmt.Println("\nSpecialist Tasks:")
+					for _, t := range g.TasksList() {
+						mark := "○"
+						switch t.Status {
+						case agent.TaskCompleted:
+							mark = "✓"
+						case agent.TaskRunning:
+							mark = "●"
+						case agent.TaskFailed:
+							mark = "✗"
+						case agent.TaskBlocked:
+							mark = "⊘"
+						}
+						fmt.Printf("%s [%s] %-12s %s (status: %s)\n", mark, t.ID, t.AssignedAgent, t.Title, t.Status)
+						if t.Result != "" {
+							fmt.Printf("    Result: %s\n", truncStr(t.Result, 80))
+						}
+					}
+					return nil
+				}
+			}
+			fmt.Println("No subagent task graph recorded for this session.")
+			return nil
+		},
+	}
+	c.Flags().String("session", "", "session id (default: latest)")
+	return c
+}
+
+// ---- plan -------------------------------------------------------------------
+
+func planCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "plan",
+		Short: "Inspect the task plan from current or latest session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			list, err := core.ListSessions()
+			if err != nil || len(list) == 0 {
+				fmt.Println("no session records found")
+				return nil
+			}
+			sessID, _ := cmd.Flags().GetString("session")
+			if sessID == "" {
+				sessID = list[0].ID
+			}
+			loaded, err := core.LoadSession(sessID)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Session: %s\nTask: %s\n\n", loaded.ID, loaded.Task)
+			if len(loaded.TaskGraphData) > 0 {
+				if g, err := agent.FromJSON(loaded.TaskGraphData); err == nil {
+					fmt.Println(g.Format())
+					return nil
+				}
+			}
+			if len(loaded.Plan) > 0 {
+				for i, p := range loaded.Plan {
+					mark := "[ ]"
+					if p.Done {
+						mark = "[x]"
+					}
+					fmt.Printf("%d. %s %s\n", i+1, mark, p.Title)
+					if p.Detail != "" {
+						fmt.Printf("   %s\n", p.Detail)
+					}
+				}
+				return nil
+			}
+			fmt.Println("No plan recorded for this session.")
+			return nil
+		},
+	}
+	c.Flags().String("session", "", "session id (default: latest)")
+	return c
+}
+
+// ---- status -----------------------------------------------------------------
+
+func statusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Display repository, git, router, and backend status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			cfg, reg, _, tools, _, err := session(ctx, "")
+			if err != nil {
+				return err
+			}
+			prefs := prefsFrom(cfg)
+
+			fmt.Println("ZEUF STATUS")
+			fmt.Printf("Workdir: %s\n", tools.Workdir)
+			branch, dirty := tools.GitInfo()
+			if branch != "" {
+				dirtyNote := "clean"
+				if dirty != "" {
+					dirtyNote = "dirty (*)"
+				}
+				fmt.Printf("Git: branch %s (%s)\n", branch, dirtyNote)
+			} else {
+				fmt.Println("Git: not a git repository")
+			}
+
+			// Discovered build systems
+			ev, _ := agent.Discover(ctx, tools.Workdir, "", tools)
+			if ev != nil && ev.BuildSystem != "" {
+				fmt.Printf("Build System: %s (default test: %s)\n", ev.BuildSystem, ev.TestCommand)
+			}
+
+			// Router info
+			fmt.Printf("\nRouter:\n")
+			fmt.Printf("  Mode: %s\n", prefs.Mode)
+			if prefs.PinnedModel != "" {
+				fmt.Printf("  Pinned Model: %s\n", prefs.PinnedModel)
+			} else {
+				fmt.Printf("  Pinned Model: (auto routing)\n")
+			}
+			fmt.Printf("  Fallback: %v (max attempts: %d)\n", prefs.FallbackEnabled, prefs.MaxAttempts)
+
+			// Models count
+			refreshNow(ctx, reg)
+			freeModels := router.FreeOnly(reg.Models())
+			fmt.Printf("  Available Models: %d total (%d free) across %d backends\n", len(reg.Models()), len(freeModels), len(reg.Backends()))
+			return nil
+		},
+	}
+}
+
 // ---- output wiring -------------------------------------------------------------
 
 func wireOutput(ag *agent.Agent, r *router.Router) func() (streamed, echoed bool) {
 	r.OnSwitch = func(s router.SwitchInfo) {
-		fmt.Fprintf(os.Stderr, "\nModel limit reached. Continuing with %s.\n\n", s.To)
+		fmt.Fprintf(os.Stderr, "\n[MODEL SWITCH] %s -> %s (reason: %s)\n\n", s.From, s.To, s.Reason)
 	}
 	var streamed, echoed bool
 	ag.Emit = func(ev agent.Event) {
 		switch ev.Type {
+		case agent.EvPhase:
+			fmt.Fprintf(os.Stderr, "\n[%s] %s\n", ev.Phase, ev.Text)
+		case agent.EvGraph:
+			if ev.Graph != nil {
+				fmt.Fprintf(os.Stderr, "\n%s\n", ev.Graph.Format())
+			}
+		case agent.EvSubStart:
+			fmt.Fprintf(os.Stderr, "  ● [Agent: %s] Starting [%s]: %s\n", ev.Role, ev.TaskID, ev.Text)
+		case agent.EvSubEnd:
+			status := "✓ completed"
+			if !ev.Ok {
+				status = "✗ failed"
+			}
+			fmt.Fprintf(os.Stderr, "  %s [Agent: %s] Task [%s] (%s)\n", status, ev.Role, ev.TaskID, ev.Duration.Round(time.Millisecond))
+		case agent.EvVerifyStart:
+			fmt.Fprintf(os.Stderr, "  ● [Verify] Running: %s\n", ev.Text)
+		case agent.EvVerifyEnd:
+			status := "✓ PASSED"
+			if !ev.Ok {
+				status = "✗ FAILED"
+			}
+			fmt.Fprintf(os.Stderr, "  %s [Verify] %s (%s)\n", status, ev.Text, ev.Duration.Round(time.Millisecond))
+			if !ev.Ok && ev.Diagnosis != "" {
+				fmt.Fprintf(os.Stderr, "    diagnosis: %s\n", ev.Diagnosis)
+			}
+		case agent.EvDiff:
+			if ev.DiffStat != "" {
+				fmt.Fprintf(os.Stderr, "\n[Changes]\n%s\n", ev.DiffStat)
+			}
+		case agent.EvReasoning:
+			fmt.Fprintf(os.Stderr, "\033[90m%s\033[0m", ev.Text)
 		case agent.EvToken:
 			streamed = true
 			fmt.Fprint(os.Stderr, ev.Text)
 		case agent.EvToolStart:
-			streamed = false // a new model turn begins
-			fmt.Fprintf(os.Stderr, "\n✓ %s…\n", ev.Tool)
+			streamed = false
+			fmt.Fprintf(os.Stderr, "\n  ↳ %s %s\n", ev.Tool, ev.Text)
 		case agent.EvToolEnd:
-			// tool results stream into context; keep the console quiet
+			// keep tool end compact
 		case agent.EvAssistant:
-			// Skip the full-text echo when tokens already streamed it;
-			// otherwise (non-streaming backends) this is the only copy.
 			if ev.Text != "" && !streamed {
 				echoed = true
 				fmt.Fprintf(os.Stderr, "\n%s\n", ev.Text)
 			}
 		case agent.EvSwitch:
 			if ev.Switched != nil {
-				fmt.Fprintf(os.Stderr, "\nModel limit reached. Continuing with %s.\n", ev.Switched.To)
+				fmt.Fprintf(os.Stderr, "\n[MODEL SWITCH] %s -> %s\n", ev.Switched.From, ev.Switched.To)
 			}
 		}
 	}

@@ -31,6 +31,7 @@ func newConnectState() *connectState {
 }
 
 func (m *Model) openConnect() {
+	m.busy = false
 	m.connect = newConnectState()
 	m.mode = modeConnect
 }
@@ -113,6 +114,8 @@ func (m Model) handleConnectKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		if c.step == 0 {
 			m.connect = nil
 			m.mode = modeChat
+			m.busy = false
+			m.flushPending()
 			return m, nil
 		}
 		c.step--
@@ -207,6 +210,8 @@ func (m Model) handleConnectKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		if key == "enter" {
 			m.connect = nil
 			m.mode = modeChat
+			m.busy = false
+			m.flushPending()
 		}
 		return m, nil
 	}

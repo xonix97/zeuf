@@ -29,7 +29,9 @@ func harness(t *testing.T, backends ...*mock.Adapter) (*Agent, *router.Router, *
 	r := router.New(reg)
 	r.Backoff = 0
 	tools := ct.NewRegistry(t.TempDir(), ct.Policy{AutoApprove: true})
-	return New(r, tools), r, tools
+	ag := New(r, tools)
+	ag.DirectMode = true
+	return ag, r, tools
 }
 
 // TestActsWithoutFriction is the action-first contract at loop level: a

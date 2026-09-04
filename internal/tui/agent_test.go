@@ -411,6 +411,30 @@ func TestErrorFlushesNext(t *testing.T) {
 	}
 }
 
+// TestIdleNeverHoldsStaged guards the reported stuck state (idle UI with
+// a visible (next)): any event must flush a staged slot when not busy.
+func TestIdleNeverHoldsStaged(t *testing.T) {
+	m, submit := queuedModel()
+	m.busy = false
+	m.pendingNext = "late hello"
+	m.blocks = append(m.blocks, block{kind: "queued", text: "(next) late hello"})
+	m.handleEvent(Event{Kind: "status", Text: "m|p|Connected"})
+	select {
+	case line := <-submit:
+		if line != "late hello" {
+			t.Errorf("flushed %q", line)
+		}
+	default:
+		t.Fatal("idle staged message must flush on any event")
+	}
+	if m.pendingNext != "" || !m.busy {
+		t.Errorf("slot must clear and turn start (pending=%q busy=%v)", m.pendingNext, m.busy)
+	}
+	if countKind(m, "queued") != 0 || countKind(m, "user") != 1 {
+		t.Error("queued row must promote to a user row")
+	}
+}
+
 func TestScrollStaysPutDuringStream(t *testing.T) {
 	m := testModel()
 	m.vp = viewport.New(98, 10)

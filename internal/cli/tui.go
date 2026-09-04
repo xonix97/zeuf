@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -13,6 +15,7 @@ import (
 	"zeuf/internal/core"
 	ctools "zeuf/internal/core/tools"
 	"zeuf/internal/mcp"
+	"zeuf/internal/providers/anthropic"
 	"zeuf/internal/providers/direct"
 	"zeuf/internal/router"
 	"zeuf/internal/skills"
@@ -69,11 +72,28 @@ func runTUI(ctx context.Context) error {
 	}()
 
 	r.OnSwitch = func(s router.SwitchInfo) {
-		events <- tui.Event{Kind: "switch", Text: s.To}
+		events <- tui.Event{Kind: "switch", Text: s.To, Detail: s.From + "|" + s.Reason}
 		events <- tui.Event{Kind: "status", Text: statusFor(reg, s.To)}
 	}
 	ag.Emit = func(ev agent.Event) {
 		switch ev.Type {
+		case agent.EvPhase:
+			events <- tui.Event{Kind: "phase", Text: ev.Phase, Detail: ev.Text}
+		case agent.EvGraph:
+			events <- tui.Event{Kind: "plan", Text: planCounts(sess), Detail: planDetail(sess), Graph: ev.Graph}
+			events <- tui.Event{Kind: "session", Detail: sessionDetail(tools)}
+		case agent.EvSubStart:
+			events <- tui.Event{Kind: "agent-start", Role: ev.Role, TaskID: ev.TaskID, Text: ev.Text, Depth: 1}
+		case agent.EvSubEnd:
+			events <- tui.Event{Kind: "agent-end", Role: ev.Role, TaskID: ev.TaskID, Text: ev.Text, Ok: ev.Ok, Duration: ev.Duration, Depth: 1}
+		case agent.EvVerifyStart:
+			events <- tui.Event{Kind: "verify-start", Text: ev.Text}
+		case agent.EvVerifyEnd:
+			events <- tui.Event{Kind: "verify-end", Text: ev.Text, Ok: ev.Ok, Duration: ev.Duration, Detail: ev.Diagnosis}
+		case agent.EvDiff:
+			if ev.DiffStat != "" {
+				events <- tui.Event{Kind: "diff", Text: ev.DiffStat}
+			}
 		case agent.EvToken:
 			events <- tui.Event{Kind: "token", Text: ev.Text, Depth: ev.Depth}
 		case agent.EvReasoning:
@@ -130,6 +150,12 @@ func runTUI(ctx context.Context) error {
 
 // handleTUILine processes one submitted line. True means the UI should stop.
 func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *router.Registry, r *router.Router, ag *agent.Agent, sess *agent.Session2, events chan tui.Event, p *tea.Program, mgr *mcp.Manager) bool {
+	defer func() {
+		if strings.HasPrefix(line, "/") && line != "/quit" && line != "/exit" {
+			events <- tui.Event{Kind: "done"}
+		}
+	}()
+
 	switch {
 	case line == "":
 		return false
@@ -221,6 +247,30 @@ func handleTUILine(ctx context.Context, line string, prefs *router.Prefs, reg *r
 		sess.Session.AppendSystem("Skill \"" + s.Name + "\" loaded:\n" + s.Body)
 		events <- tui.Event{Kind: "text", Text: fmt.Sprintf("Skill %s loaded into context.", s.Name)}
 		return false
+	case line == "/plan":
+		if len(sess.Session.TaskGraphData) > 0 {
+			if g, err := agent.FromJSON(sess.Session.TaskGraphData); err == nil {
+				events <- tui.Event{Kind: "text", Text: g.Format()}
+				return false
+			}
+		}
+		events <- tui.Event{Kind: "text", Text: "Plan:\n" + planDetail(sess)}
+		return false
+	case line == "/diff":
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		diffOut, err := exec.CommandContext(cctx, "git", "-C", ag.Tools.Workdir, "diff", "--stat").Output()
+		if err != nil || len(diffOut) == 0 {
+			events <- tui.Event{Kind: "text", Text: "No uncommitted diff in repository."}
+		} else {
+			events <- tui.Event{Kind: "diff", Text: string(diffOut)}
+		}
+		return false
+	case line == "/status":
+		branch, dirty := ag.Tools.GitInfo()
+		text := fmt.Sprintf("Workdir: %s\nGit: branch %s (dirty: %s)\nRouter: mode=%s pinned=%s fallback=%v", ag.Tools.Workdir, branch, dirty, prefs.Mode, prefs.PinnedModel, prefs.FallbackEnabled)
+		events <- tui.Event{Kind: "text", Text: text}
+		return false
 	case line == "/session":
 		events <- tui.Event{Kind: "text", Text: sess.Summary()}
 		return false
@@ -256,10 +306,12 @@ func handleTUIAction(ctx context.Context, act tui.Action, prefs *router.Prefs, r
 		prefs.PinnedModel = a.FullID
 		events <- tui.Event{Kind: "status", Text: statusFor(reg, a.FullID)}
 		events <- tui.Event{Kind: "text", Text: "Pinned model: " + a.FullID + "  (/router unpin for automatic)"}
+		events <- tui.Event{Kind: "done"}
 	case tui.ActionUnpin:
 		prefs.PinnedModel = ""
 		events <- tui.Event{Kind: "status", Text: statusFor(reg, "")}
 		events <- tui.Event{Kind: "text", Text: "Routing: automatic."}
+		events <- tui.Event{Kind: "done"}
 	case tui.ActionConnect:
 		used, err := Save(ConnectSpec{Name: a.Name, BaseURL: a.BaseURL, KeyEnv: a.KeyEnv, Secret: a.Secret})
 		if err != nil {
@@ -270,10 +322,12 @@ func handleTUIAction(ctx context.Context, act tui.Action, prefs *router.Prefs, r
 		refreshNow(ctx, reg)
 		events <- tui.Event{Kind: "status", Text: statusFor(reg, "")}
 		events <- tui.Event{Kind: "text", Text: fmt.Sprintf("Connected %q (credential: %s). %d free models available.", a.Name, used, len(router.FreeOnly(reg.Models())))}
+		events <- tui.Event{Kind: "done"}
 	case tui.ActionLogin:
 		refreshNow(ctx, reg)
 		events <- tui.Event{Kind: "status", Text: statusFor(reg, "")}
 		events <- tui.Event{Kind: "text", Text: fmt.Sprintf("Rescanned %s: %d free models available.", a.Backend, len(router.FreeOnly(reg.Models())))}
+		events <- tui.Event{Kind: "done"}
 	}
 }
 
@@ -458,7 +512,11 @@ func registerDirect(reg *router.Registry, name string) {
 	}
 	for _, d := range cfg.Direct {
 		if d.Name == name {
-			reg.Register(direct.New(direct.Config{Name: d.Name, BaseURL: d.BaseURL, APIKeyEnv: d.APIKeyEnv}))
+			if d.Type == "anthropic" || d.Name == "anthropic" || strings.Contains(d.BaseURL, "anthropic.com") {
+				reg.Register(anthropic.New(anthropic.Config{Name: d.Name, BaseURL: d.BaseURL, APIKeyEnv: d.APIKeyEnv}))
+			} else {
+				reg.Register(direct.New(direct.Config{Name: d.Name, BaseURL: d.BaseURL, APIKeyEnv: d.APIKeyEnv}))
+			}
 			return
 		}
 	}

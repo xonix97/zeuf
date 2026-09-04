@@ -186,3 +186,40 @@ func TestMissingKeyIsAuthError(t *testing.T) {
 		t.Errorf("expected auth error, got %v", err)
 	}
 }
+
+func TestStreamToolCallBuffered(t *testing.T) {
+	a, done := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"foo.txt\\\"}\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	defer done()
+	ch, err := a.Stream(context.Background(), core.ChatRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tools []core.ToolCall
+	for ev := range ch {
+		if ev.Type == core.EventTool {
+			tools = append(tools, ev.ToolCalls...)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(tools))
+	}
+	if tools[0].ID != "call_1" || tools[0].Name != "read" || tools[0].Arguments != `{"path":"foo.txt"}` {
+		t.Errorf("unexpected tool: %+v", tools[0])
+	}
+}
+
+func TestEnrichModelInfo(t *testing.T) {
+	mi := core.ModelInfo{ID: "deepseek-reasoner"}
+	enrichModelInfo(&mi)
+	if mi.Caps.ContextLength != 64000 || mi.Scores.Coding < 0.9 {
+		t.Errorf("enrich deepseek-reasoner failed: %+v", mi)
+	}
+}
+

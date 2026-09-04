@@ -46,6 +46,7 @@ var Presets = config.Presets
 // ConnectSpec is a completed wizard (UI-agnostic).
 type ConnectSpec struct {
 	Name    string
+	Type    string
 	BaseURL string
 	// Exactly one of KeyEnv (use environment) or Secret (store now).
 	KeyEnv string
@@ -96,7 +97,11 @@ func Save(spec ConnectSpec) (string, error) {
 	} else if keyEnv != "" {
 		storeUsed = "env:" + keyEnv
 	}
-	cfg.Direct = append(cfg.Direct, config.DirectEndpoint{Name: spec.Name, BaseURL: strings.TrimSpace(spec.BaseURL), APIKeyEnv: keyEnv})
+	epType := spec.Type
+	if epType == "" && (spec.Name == "anthropic" || strings.Contains(spec.BaseURL, "anthropic.com")) {
+		epType = "anthropic"
+	}
+	cfg.Direct = append(cfg.Direct, config.DirectEndpoint{Name: spec.Name, Type: epType, BaseURL: strings.TrimSpace(spec.BaseURL), APIKeyEnv: keyEnv})
 	if err := config.Save(cfg); err != nil {
 		return "", err
 	}

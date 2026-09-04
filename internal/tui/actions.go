@@ -1,6 +1,10 @@
 package tui
 
-import "zeuf/internal/agent"
+import (
+	"time"
+
+	"zeuf/internal/agent"
+)
 
 // Action is a UI-to-core request (model pin, backend connect). The TUI
 // never touches config, registry or router directly.
@@ -72,4 +76,10 @@ type Event struct {
 	// "1:title"/"0:title" plan lines for "plan",
 	// "workdir|branch|dirty" for "session".
 	Detail string
+
+	// Orchestration fields:
+	TaskID   string
+	Role     string
+	Duration time.Duration
+	Graph    *agent.TaskGraph
 }

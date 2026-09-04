@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"zeuf/internal/core"
 	ct "zeuf/internal/core/tools"
@@ -30,21 +31,37 @@ type Event struct {
 	Ok bool
 	// Depth marks subagent-nested events (0 = orchestrator itself).
 	Depth int
+
+	// Orchestration fields:
+	Phase     string
+	TaskID    string
+	Role      string
+	Duration  time.Duration
+	Diagnosis string
+	DiffStat  string
+	Graph     *TaskGraph
 }
 
 // EventType enumerates agent events.
 type EventType string
 
 const (
-	EvToken     EventType = "token"
-	EvReasoning EventType = "reasoning"
-	EvToolStart EventType = "tool_start"
-	EvToolEnd   EventType = "tool_end"
-	EvAssistant EventType = "assistant"
-	EvSwitch    EventType = "model_switch"
-	EvUsage     EventType = "usage"
-	EvError     EventType = "error"
-	EvDone      EventType = "done"
+	EvToken       EventType = "token"
+	EvReasoning   EventType = "reasoning"
+	EvToolStart   EventType = "tool_start"
+	EvToolEnd     EventType = "tool_end"
+	EvAssistant   EventType = "assistant"
+	EvSwitch      EventType = "model_switch"
+	EvUsage       EventType = "usage"
+	EvError       EventType = "error"
+	EvDone        EventType = "done"
+	EvPhase       EventType = "phase"
+	EvGraph       EventType = "graph"
+	EvSubStart    EventType = "sub_start"
+	EvSubEnd      EventType = "sub_end"
+	EvVerifyStart EventType = "verify_start"
+	EvVerifyEnd   EventType = "verify_end"
+	EvDiff        EventType = "diff"
 )
 
 // Agent drives turns over a router and a tool registry.
@@ -63,6 +80,8 @@ type Agent struct {
 	Depth int
 	// Prefs snapshot used for delegated subagents.
 	Prefs router.Prefs
+	// DirectMode forces direct execution without multi-phase orchestration.
+	DirectMode bool
 
 	subMu sync.Mutex
 	subs  []SubInfo
@@ -102,17 +121,32 @@ func (a *Agent) emit(ev Event) {
 }
 
 // RunTurn executes one user task against sess, preserving sess across any
-// number of model switches. It returns the assistant's final text.
+// number of model switches. When Depth==0 and !DirectMode, it runs the full
+// orchestrator pipeline (discovery, DAG planning, concurrent scheduler, specialist
+// subagents, verification and repair).
 func (a *Agent) RunTurn(ctx context.Context, sess *Session2, prefs router.Prefs) (string, error) {
 	a.Prefs = prefs
+	if a.Hub != nil && a.Tools != nil {
+		a.Tools.Policy.Approver = a.Hub.Ask
+	}
+
+	if a.Depth == 0 && !a.DirectMode {
+		orch := NewOrchestrator(a.Router, a.Tools)
+		orch.Hub = a.Hub
+		orch.StreamTokens = a.StreamTokens
+		orch.MaxIters = a.MaxIters
+		orch.Emit = a.emit
+		out, err := orch.Execute(ctx, sess, prefs)
+		for _, s := range orch.SnapshotSubs() {
+			a.recordSub(s)
+		}
+		return out, err
+	}
+
+	// Subagent or direct mode run
 	if _, ok := a.Tools.Get("delegate"); !ok && a.Depth < maxDelegateDepth {
 		a.Tools.AddTool(DelegateTool(a, prefs))
 	}
-	if a.Hub != nil {
-		a.Tools.Policy.Approver = a.Hub.Ask
-	}
-	// Checkpoint every turn's file touches so /rewind can restore them.
-	// Depth>0 subagents share the registry and fold into the same turn.
 	if a.Depth == 0 {
 		a.Tools.BeginCheckpoint(sess.Task())
 		defer func() {
